@@ -8,7 +8,7 @@ const generateToken = (user) => {
   return jwt.sign({ user }, "jakjsdgskasjbsabdjsd");
 };
 
-router.post("/registration", async (req, res) => {
+router.post("/signup", async (req, res) => {
   try {
    
   
@@ -31,7 +31,7 @@ router.post("/registration", async (req, res) => {
   }
 });
 
-router.post("/login", async (req, res) => {
+router.post("/signin", async (req, res) => {
   try {
     const { Email, Password } = req.body;
     const alreadyuser = await User.findOne({ Email });
