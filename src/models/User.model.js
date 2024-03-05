@@ -4,7 +4,7 @@ const UserSchema = new mongoose.Schema(
   {
     Email: { type: String, trim: true, unique: true, match: /.+\@.+\..+/,required:true },
     Password: { type: String, required: true },
-    // Tests: { type: [Object], required: true },
+    // TestTaken: [{ type: [Object], required: true }],
     // Rank: { type: Number, required: true },
   },
   {

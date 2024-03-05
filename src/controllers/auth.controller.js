@@ -3,20 +3,26 @@ const jwt = require("jsonwebtoken");
 const bcrypt = require("bcrypt");
 const User = require("../models/User.model");
 const router = express.Router();
-
+// const cookies = require("cookie-parser")
 const generateToken = (user) => {
   return jwt.sign({ user }, "jakjsdgskasjbsabdjsd");
 };
 
 router.post("/registration", async (req, res) => {
   try {
+   
+  
+  
+    req.cookies.name = "Mayank";
     const { Email } = req.body;
     const alreadyuser = await User.findOne({ Email });
-    console.log(alreadyuser);
+    console.log("h", alreadyuser, Email);
     if (!alreadyuser && Email != null) {
       const user = await User.create(req.body);
-      const token = generateToken(req.body);
-      return res.send({ message: "registration success",token });
+      const token = generateToken(req.body); 
+      res.cookie("cookie_name", "cookie_value", { HttpOnly: true });
+      req.cookies.Token = token; console.log(req.cookies);
+      return res.send({ message: "registration success", token });
     } else if (alreadyuser) {
       return res.send({ message: "Email is already register" });
     }

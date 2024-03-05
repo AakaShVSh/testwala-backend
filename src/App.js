@@ -1,10 +1,13 @@
-const express = require("express")
+const express = require("express");
+const cookies = require("cookie-parser");
 const app = express();
 const cors = require("cors");
 const QuestionController = require("./controllers/question.controller");
 const RegistrationController = require("./controllers/auth.controller");
 app.use(express.json());
+app.use(cookies());
 app.use(cors());
+
 app.use("/",QuestionController);
 app.use("/auth",RegistrationController);
 module.exports = app;
