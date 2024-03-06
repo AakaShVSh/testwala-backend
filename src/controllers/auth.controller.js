@@ -28,7 +28,7 @@ router.post("/signup", async (req, res) => {
     }
   } catch (error) {
     return res.send({ message: error.message });
-  }
+  } 
 });
 
 router.post("/signin", async (req, res) => {
