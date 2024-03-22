@@ -24,10 +24,7 @@ router.post("/create-Question",  async (req, res) => {
 
 router.patch("/updating-Question/:id",  async (req, res) => {
   try {
-    const Question = await questionSchema
-      .findByIdAndUpdate(req.params.id, req.body, { new: true })
-      .lean()
-      .exec();
+    const Question = await questionSchema.findByIdAndUpdate(req.params.id, req.body, { new: true }).lean().exec();
     return res.status(200).send({message:"Question Updated successfully",data:Question});
   } catch (error) {
     return res.send({ updating_error: error });
@@ -41,6 +38,5 @@ router.delete("/delete-Question/:id",  async (req, res) => {
     return res.send({ deleting_error: error });
   }
 });
-
-
+ 
 module.exports = router;
