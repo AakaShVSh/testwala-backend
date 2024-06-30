@@ -2,20 +2,21 @@ const mongoose = require("mongoose");
 const bcrypt = require("bcrypt");
 const UserSchema = new mongoose.Schema(
   {
-    email: {
+    Email: {
       type: String,
       trim: true,
       unique: true,
       match: /.+\@.+\..+/,
       required: true,
     },
-    password: {
+    Password: {
       type: String,
       required: true,
     },
-    firstName: {
+   Name: {
       type: String,
       trim: true,
+      default:"user"
     },
     registeredAt: {
       type: Date,
@@ -44,7 +45,7 @@ const UserSchema = new mongoose.Schema(
     //     type: String,
     //   },
     // },
-    phone: {
+    Phone: {
       type: String,
     },
     // testTaken: [
@@ -62,14 +63,15 @@ const UserSchema = new mongoose.Schema(
     //     },
     //   },
     // ],
-    rank: {
+    Rank: {
       type: Number,
+      default:0
     },
     isAdmin: {
       type: Boolean,
       default: false,
     },
-    preferences: {
+    Preferences: {
       // notifications: {
         // email: {
         //   type: Boolean,
