@@ -53,7 +53,7 @@ router.post("/signin", async (req, res) => {
       return res.send({ message: "Email is not Register" });
     }
   } catch (error) {
-    return res.send({ message: "something went wrong" ,err:error.message});
+    return res.send({ message: "Wrong Email or Password", err: error.message });
   }
 });
 
