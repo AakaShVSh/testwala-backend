@@ -47,13 +47,13 @@ router.post("/signin", async (req, res) => {
         return res.send({ message: "Wrong Email or Password" });
       } else if (match) {
         let token = generateToken(req.body);
-        return res.send({ Message: "login success", data: req.body, token });
+        return res.send({ message: "login success", data: req.body, token });
       }
     }else if(!alreadyuser){
       return res.send({ message: "Email is not Register" });
     }
   } catch (error) {
-    return res.send({ Message: error.message });
+    return res.send({ message: error.message });
   }
 });
 
