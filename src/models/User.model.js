@@ -16,7 +16,6 @@ const UserSchema = new mongoose.Schema(
     firstName: {
       type: String,
       trim: true,
-      required: true,
     },
     registeredAt: {
       type: Date,
