@@ -7,7 +7,14 @@ const router = express.Router();
 const generateToken = (user) => {
   return jwt.sign({ user }, "jakjsdgskasjbsabdjsd");
 };
-
+router.get("/", async (req, res) => {
+  try {
+    const Question = await User.find({}).lean().exec();
+    return res.send({ status: 200, data: Question });
+  } catch (error) {
+    return res.send({ err: error });
+  }
+});
 router.post("/signup", async (req, res) => {
   try {
     const { Email } = req.body;
