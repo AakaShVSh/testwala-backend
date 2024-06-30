@@ -49,6 +49,8 @@ router.post("/signin", async (req, res) => {
         let token = generateToken(req.body);
         return res.send({ Message: "login success", data: req.body, token });
       }
+    }else if(!alreadyuser){
+      return res.send({ message: "Email is not Register" });
     }
   } catch (error) {
     return res.send({ Message: error.message });
