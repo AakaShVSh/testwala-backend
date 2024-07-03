@@ -2,37 +2,49 @@ const mongoose = require("mongoose");
 
 const UserTestSchema = new mongoose.Schema(
   {
-    user: { type: mongoose.Schema.Types.ObjectId, ref: "User",required:true },
-    section: { type: String, required: true },
+    user: { type: mongoose.Schema.Types.ObjectId, ref: "User", required: true },
+    category: { type: String, required: true },
 
-   
     difficultyLevel: {
       type: String,
-      enum: ['easy', 'medium', 'hard'],
-      required: true
+      enum: ["easy", "medium", "hard"],
+      required: true,
     },
-    tags: [{
-      type: String
-    }],
-    questions: [{
-      questionText: {
+    tags: [
+      {
         type: String,
-        required: true
       },
-      options: {
-        type: [String],
-        required: true
+    ],
+    score: {
+      type: Number,
+      required: true,
+    },
+    allAnswer: { type: Object, required: true },
+    answeredQuestion: { type: Array, required: true },
+    notAnswer: { type: Array, required: true },
+    markedAndAnswer: { type: Array, required: true },
+    markedNotAnswer: { type: Array, required: true },
+    questions: [
+      {
+        qus: {
+          type: String,
+          required: true,
+        },
+        options: {
+          type: [String],
+          required: true,
+        },
+        answer: {
+          type: Number,
+          required: true,
+        },
+        explanation: {
+          type: String,
+          default: "",
+        },
       },
-      answer: {
-        type: Number,
-        required: true
-      },
-      explanation: {
-        type: String
-      },
-    
-      
-    }]},
+    ],
+  },
   {
     versionKey: false,
     timestamps: true,
