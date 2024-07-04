@@ -8,7 +8,7 @@ const UserTestSchema = new mongoose.Schema(
     difficultyLevel: {
       type: String,
       enum: ["easy", "medium", "hard"],
-      required: true,
+      // required: true,
     },
     tags: [
       {
