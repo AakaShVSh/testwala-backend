@@ -19,7 +19,7 @@ router.post("/signup", async (req, res) => {
   try {
     const { Email } = req.body;
     const alreadyuser = await User.findOne({ Email });
-    // console.log("h", alreadyuser, Email);
+    console.log("h", alreadyuser, Email);
     if (!alreadyuser && Email != null) {
       const user = await User.create(req.body);
       const token = generateToken(req.body);
@@ -38,16 +38,16 @@ router.post("/signin", async (req, res) => {
   try {
     const { Email, Password } = req.body;
     const alreadyuser = await User.findOne({ Email });
-    console.log(req.body);
+    // console.log(req.body);
     //because we are finding in already user variable and below we are checking its password
     const match = alreadyuser.checkPassword(Password);
-
+  console.log("h", alreadyuser, Email);
     if (alreadyuser && Email != null) {
       if (!match) {
         return res.send({ message: "Wrong Email or Password" });
       } else if (match) {
         let token = generateToken(req.body);
-        return res.send({ message: "login success", data: req.body, token });
+        return res.send({ message: "login success", data: alreadyuser, token });
       }
     }else if(!alreadyuser){
       return res.send({ message: "Email is not Register" });
