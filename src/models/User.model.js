@@ -13,10 +13,10 @@ const UserSchema = new mongoose.Schema(
       type: String,
       required: true,
     },
-   Name: {
+    Name: {
       type: String,
       trim: true,
-      default:"user"
+      default: "user",
     },
     registeredAt: {
       type: Date,
@@ -24,6 +24,11 @@ const UserSchema = new mongoose.Schema(
     },
     lastLogin: {
       type: Date,
+    },
+
+    TotalMark: {
+      type: Number,
+      default: 0,
     },
     // profilePicture: {
     //   type: String, // URL to the profile picture
@@ -65,7 +70,7 @@ const UserSchema = new mongoose.Schema(
     // ],
     Rank: {
       type: Number,
-      default:0
+      default: 0,
     },
     isAdmin: {
       type: Boolean,
@@ -73,14 +78,14 @@ const UserSchema = new mongoose.Schema(
     },
     Preferences: {
       // notifications: {
-        // email: {
-        //   type: Boolean,
-        //   default: true,
-        // },
-        // sms: {
-        //   type: Boolean,
-        //   default: false,
-        // },
+      // email: {
+      //   type: Boolean,
+      //   default: true,
+      // },
+      // sms: {
+      //   type: Boolean,
+      //   default: false,
+      // },
       // },
       theme: {
         type: String,
@@ -95,15 +100,14 @@ const UserSchema = new mongoose.Schema(
   }
 );
 
-
-UserSchema.pre("save",function (next){
-  const hash = bcrypt.hashSync(this.Password,10);
+UserSchema.pre("save", function (next) {
+  const hash = bcrypt.hashSync(this.Password, 10);
   this.Password = hash;
   next();
-})
+});
 
-UserSchema.methods.checkPassword = function(password){
-  return bcrypt.compareSync(password,this.Password);
-}
+UserSchema.methods.checkPassword = function (password) {
+  return bcrypt.compareSync(password, this.Password);
+};
 
-module.exports = mongoose.model("User",UserSchema);
+module.exports = mongoose.model("User", UserSchema);
