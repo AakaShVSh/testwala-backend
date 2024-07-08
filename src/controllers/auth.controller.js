@@ -112,6 +112,7 @@ router.post("/forgot-password", async (req, res) => {
           console.log(result);
           return res.status(200).send({
             Status: "Email sended successfully",
+            user:userEmail,
             Otp: randomOtp,
             method: "email",
           });
