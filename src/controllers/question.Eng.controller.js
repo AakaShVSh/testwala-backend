@@ -16,7 +16,7 @@ router.post("/create-Question", async (req, res) => {
     const Question = await questionSchema.create(req.body);
     return res
       .status(200)
-      .send({ message: "QPuestions added successfully", data: Question });
+      .send({ message: "Questions added successfully", data: Question });
   } catch (error) {
     return res.send({ createing_error: error.message });
   }
