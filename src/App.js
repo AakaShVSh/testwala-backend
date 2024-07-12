@@ -2,7 +2,10 @@ const express = require("express");
 const cookies = require("cookie-parser");
 const app = express();
 const cors = require("cors");
-const QuestionController = require("./controllers/question.controller");
+const QuestionMathController = require("./controllers/question.math.controller");
+const QuestionEngController = require("./controllers/question.math.controller");
+const QuestionGsController = require("./controllers/question.math.controller");
+const QuestionReasoningController = require("./controllers/question.math.controller");
 const RegistrationController = require("./controllers/auth.controller");
 const UserTestDataController = require("./controllers/UserTest.Controller");
 app.use(express.json());
@@ -10,7 +13,10 @@ app.use(cookies());
 app.use(cors());
 
 app.use("/auth",RegistrationController);
-app.use("/QuestionStorage",QuestionController);
+app.use("/QuestionStorage/math", QuestionMathController);
+app.use("/QuestionStorage/Eng", QuestionEngController);
+app.use("/QuestionStorage/gs", QuestionGsController);
+app.use("/QuestionStorage/Reasoning", QuestionReasoningController);
 app.use("/UserTestData", UserTestDataController);
 
 module.exports = app;

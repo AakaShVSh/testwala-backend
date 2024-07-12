@@ -1,20 +1,21 @@
 const mongoose = require("mongoose");
 
-const QuestionSchema = mongoose.Schema(
+const QuestionEngSchema = mongoose.Schema(
   {
     section: { type: String, required: true },
-    topic:{type:String,required:true},
+    topic: { type: String, required: true },
     difficultyLevel: {
       type: String,
       enum: ["easy", "medium", "hard"],
-      required: true,default:"easy"
+      required: true,
+      default: "easy",
     },
     question: [
       {
         qus: { type: String, required: true },
         options: { type: Array, required: true },
         answer: { type: Number, required: true },
-        explanation: { type: String,default:"" },
+        explanation: { type: String, default: "" },
       },
     ],
   },
@@ -24,4 +25,4 @@ const QuestionSchema = mongoose.Schema(
   }
 );
 
-module.exports = mongoose.model("QuestionData", QuestionSchema);
+module.exports = mongoose.model("QuestionEngData", QuestionEngSchema);

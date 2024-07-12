@@ -1,6 +1,6 @@
 const express = require("express");
 const router = express.Router();
-const questionSchema = require("../models/question.model");
+const questionSchema = require("../models/engquestion.model");
 
 router.get("/", async (req, res) => {
   try {
@@ -16,7 +16,7 @@ router.post("/create-Question", async (req, res) => {
     const Question = await questionSchema.create(req.body);
     return res
       .status(200)
-      .send({ message: "Product created successfully", data: Question });
+      .send({ message: "QPuestions added successfully", data: Question });
   } catch (error) {
     return res.send({ createing_error: error.message });
   }
