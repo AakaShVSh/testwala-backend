@@ -2,13 +2,13 @@ const mongoose = require("mongoose");
 
 const QuestionEngSchema = mongoose.Schema(
   {
-    section: { type: String, required: true },
     topic: { type: String, required: true },
+    type: { type: String, required: true },
     difficultyLevel: {
       type: String,
       enum: ["easy", "medium", "hard"],
       required: true,
-      default: "easy",
+      default: "easy",p85
     },
     question: [
       {

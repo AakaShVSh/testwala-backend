@@ -1,10 +1,10 @@
 const express = require("express");
 const router = express.Router();
-const questionSchema = require("../models/mathquestion.model");
+const questionMathSchema = require("../models/mathquestion.model");
 
 router.get("/", async (req, res) => {
   try {
-    const Question = await questionSchema.find({}).lean().exec();
+    const Question = await questionMathSchema.find({}).lean().exec();
     return res.send({ status: 200, data: Question });
   } catch (error) {
     return res.send({ err: error });
@@ -13,7 +13,7 @@ router.get("/", async (req, res) => {
 
 router.post("/create-Question", async (req, res) => {
   try {
-    const Question = await questionSchema.create(req.body);
+    const Question = await questionMathSchema.create(req.body);
     return res
       .status(200)
       .send({ message: "Questions added successfully", data: Question });
@@ -24,7 +24,7 @@ router.post("/create-Question", async (req, res) => {
 
 router.patch("/updating-Question/:id", async (req, res) => {
   try {
-    const Question = await questionSchema
+    const Question = await questionMathSchema
       .findByIdAndUpdate(req.params.id, req.body, { new: true })
       .lean()
       .exec();
@@ -37,7 +37,7 @@ router.patch("/updating-Question/:id", async (req, res) => {
 });
 router.delete("/delete-Question/:id", async (req, res) => {
   try {
-    await questionSchema.findByIdAndDelete(req.params.id);
+    await questionMathSchema.findByIdAndDelete(req.params.id);
     return res.status(200).send("Question delete successfully");
   } catch (error) {
     return res.send({ deleting_error: error });
