@@ -18,7 +18,7 @@ router.post("/create-Question", async (req, res) => {
       .status(200)
       .send({ message: "Questions added successfully", data: Question });
   } catch (error) {
-    return res.send({ createing_error: error.message });
+    return res.send({ createing_error: error.message,e:error });
   }
 });
 

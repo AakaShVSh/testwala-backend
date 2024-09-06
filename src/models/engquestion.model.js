@@ -8,7 +8,7 @@ const QuestionEngSchema = mongoose.Schema(
       type: String,
       enum: ["easy", "medium", "hard"],
       required: true,
-      default: "easy",p85
+      default: "easy",
     },
     question: [
       {
