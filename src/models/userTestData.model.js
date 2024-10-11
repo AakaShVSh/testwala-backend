@@ -4,7 +4,8 @@ const UserTestSchema = new mongoose.Schema(
   {
     user: { type: mongoose.Schema.Types.ObjectId, ref: "User", required: true },
     section: { type: String, required: true },
-
+    subject:{type:String,required:true},
+    rank:{type:Number,required:true},
     difficultyLevel: {
       type: String,
       enum: ["easy", "medium", "hard"],
