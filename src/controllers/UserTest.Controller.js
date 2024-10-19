@@ -13,7 +13,6 @@ router.get("/", async (req, res) => {
 
 router.post("/AddNew-userTestData", async (req, res) => {
   try {
-    console.log(req);
     const userTestData = await UserTestSchema.create(req.body);
     return res
       .status(200)
