@@ -4,6 +4,7 @@ const QuestionMathSchema = mongoose.Schema(
   {
     section: { type: String, required: true },
     topic: { type: String, required: true },
+    subject: { type: String, required: true },
     difficultyLevel: {
       type: String,
       enum: ["easy", "medium", "hard"],
@@ -16,7 +17,7 @@ const QuestionMathSchema = mongoose.Schema(
         options: { type: Array, required: true },
         answer: { type: Number, required: true },
         explanation: { type: String, default: "" },
-        exam:{type:String},
+        exam: { type: String },
       },
     ],
   },
