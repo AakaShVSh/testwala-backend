@@ -17,6 +17,8 @@ const QuestionEngSchema = mongoose.Schema(
         options: { type: Array, required: true },
         answer: { type: Number, required: true },
         explanation: { type: String, default: "" },
+        explanationh: { type: String, default: "" },
+        exam: { type: String, default: "" },
       },
     ],
   },
