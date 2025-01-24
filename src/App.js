@@ -4,8 +4,10 @@ const app = express();
 const cors = require("cors");
 const QuestionMathController = require("./controllers/question.math.controller");
 const QuestionEngController = require("./controllers/question.Eng.controller");
+const QuestionVocabularyController = require("./controllers/question.vocabulary.controller");
 const QuestionGsController = require("./controllers/question.gs.controller");
 const QuestionReasoningController = require("./controllers/question.reasoning");
+
 const RegistrationController = require("./controllers/auth.controller");
 const UserTestDataController = require("./controllers/UserTest.Controller");
 app.use(express.json());
@@ -17,6 +19,7 @@ app.use("/QuestionStorage/math", QuestionMathController);
 app.use("/QuestionStorage/Eng", QuestionEngController);
 app.use("/QuestionStorage/gs", QuestionGsController);
 app.use("/QuestionStorage/Reasoning", QuestionReasoningController);
+app.use("/QuestionStorage/vocabulary", QuestionVocabularyController);
 app.use("/UserTestData", UserTestDataController);
 
 module.exports = app;
