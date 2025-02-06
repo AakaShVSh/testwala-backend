@@ -21,7 +21,7 @@ app.use("/QuestionStorage/Eng", QuestionEngController);
 app.use("/QuestionStorage/gs", QuestionGsController);
 app.use("/QuestionStorage/Reasoning", QuestionReasoningController);
 app.use("/QuestionStorage/vocabulary", QuestionVocabularyController);
-app.use("/QuestionStorage/Mathtwo", QuestionmathTwoController);
+app.use("/QuestionStorage/mathtwo", QuestionmathTwoController);
 app.use("/UserTestData", UserTestDataController);
 
 module.exports = app;
