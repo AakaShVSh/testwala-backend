@@ -5,6 +5,7 @@ const cors = require("cors");
 const QuestionMathController = require("./controllers/question.math.controller");
 const QuestionEngController = require("./controllers/question.Eng.controller");
 const QuestionVocabularyController = require("./controllers/question.vocabulary.controller");
+const QuestionmathTwoController = require("./controllers/question.mathTwo.controller");
 const QuestionGsController = require("./controllers/question.gs.controller");
 const QuestionReasoningController = require("./controllers/question.reasoning");
 
@@ -20,6 +21,7 @@ app.use("/QuestionStorage/Eng", QuestionEngController);
 app.use("/QuestionStorage/gs", QuestionGsController);
 app.use("/QuestionStorage/Reasoning", QuestionReasoningController);
 app.use("/QuestionStorage/vocabulary", QuestionVocabularyController);
+app.use("/QuestionStorage/Mathtwo", QuestionmathTwoController);
 app.use("/UserTestData", UserTestDataController);
 
 module.exports = app;
