@@ -1,11 +1,11 @@
 const express = require("express");
 const router = express.Router();
-const QuestionMathData = require("../models/question.model");
+const QuestionEngData = require("../models/question.model");
 const { body, validationResult } = require("express-validator");
 
 router.get("/", async (req, res) => {
   try {
-    const data = await QuestionMathData.find({}).lean().exec();
+    const data = await QuestionEngData.find({}).lean().exec();
     return res.send({ status: 200, data });
   } catch (error) {
     return res.status(500).send({ err: error.message });
@@ -26,7 +26,7 @@ router.post(
         return res.status(422).json({ errors: result.array() });
       }
 
-      const question = await QuestionMathData.create(req.body);
+      const question = await QuestionEngData.create(req.body);
       return res
         .status(200)
         .send({ message: "Question added successfully", data: question });
@@ -38,7 +38,7 @@ router.post(
 
 router.patch("/:id", async (req, res) => {
   try {
-    const question = await QuestionMathData.findByIdAndUpdate(
+    const question = await QuestionEngData.findByIdAndUpdate(
       req.params.id,
       req.body,
       { new: true }
@@ -60,7 +60,7 @@ router.patch("/:id", async (req, res) => {
 
 router.delete("/:id", async (req, res) => {
   try {
-    const question = await QuestionMathData.findByIdAndDelete(req.params.id);
+    const question = await QuestionEngData.findByIdAndDelete(req.params.id);
 
     if (!question) {
       return res.status(404).send({ message: "Question not found" });
