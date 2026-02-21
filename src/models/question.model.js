@@ -1,24 +1,28 @@
 const mongoose = require("mongoose");
 
-const QuestionGsSchema = mongoose.Schema(
+const QuestionSchema = mongoose.Schema(
   {
-    topic: { type: String, required: true },
+    subject: {
+      type: String,
+      required: true,
+      enum: ["math", "english", "gs", "reasoning", "vocabulary", "mathtwo"],
+    },
     section: { type: String, required: true },
-    subject: { type: String, required: true },
+    topic: { type: String, required: true },
     difficultyLevel: {
       type: String,
       enum: ["easy", "medium", "hard"],
-      // required: true,
       default: "easy",
     },
     question: [
       {
         qus: { type: String, required: true },
-        qush: { type: String, required: true },
+        qush: { type: String, default: "" },
         options: { type: Array, required: true },
-        optionsh: { type: Array, required: true },
+        optionsh: { type: Array, default: [] },
         answer: { type: Number, required: true },
         explanation: { type: String, default: "" },
+        explanationh: { type: String, default: "" },
         exam: { type: String, default: "" },
       },
     ],
@@ -29,4 +33,6 @@ const QuestionGsSchema = mongoose.Schema(
   }
 );
 
-module.exports = mongoose.model("QuestionGsData", QuestionGsSchema);
+QuestionSchema.index({ subject: 1, section: 1, topic: 1 });
+
+module.exports = mongoose.model("Question", QuestionSchema);
