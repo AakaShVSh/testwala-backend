@@ -1,8 +1,8 @@
 const express = require("express");
 const router = express.Router();
-const Test = require("../models/Test.model");
-const Result = require("../models/Result.model");
-const Question = require("../models/Question.model");
+const Test = require("../models/test.model");
+const Result = require("../models/result.model");
+const Question = require("../models/question.model");
 
 const toSlug = (str) =>
   str

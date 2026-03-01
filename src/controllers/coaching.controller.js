@@ -1,6 +1,6 @@
 const express = require("express");
 const router = express.Router();
-const Coaching = require("../models/Coaching.model");
+const Coaching = require("../models/coaching.model");
 
 const toSlug = (str) =>
   str

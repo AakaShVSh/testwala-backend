@@ -1,7 +1,7 @@
 const express = require("express");
 const router = express.Router();
-const Result = require("../models/Result.model");
-const Test = require("../models/Test.model");
+const Result = require("../models/result.model");
+const Test = require("../models/test.model");
 
 /* ─────────────────────────────────────────────
    POST /results/submit

@@ -1,6 +1,6 @@
 const express = require("express");
 const router = express.Router();
-const Question = require("../models/Question.model");
+const Question = require("../models/question.model");
 
 /* ─────────────────────────────────────────────
    HELPER – build a filter object from query params
