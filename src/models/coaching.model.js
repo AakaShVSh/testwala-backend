@@ -4,6 +4,7 @@ const CoachingSchema = new mongoose.Schema(
   {
     name: { type: String, required: true, trim: true },
     // URL slug e.g. "abc-coaching" → accessed via /abc-coaching
+    
     slug: {
       type: String,
       required: true,
