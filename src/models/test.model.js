@@ -8,7 +8,7 @@ const crypto = require("crypto");
  */
 const TestSchema = new mongoose.Schema(
   {
-    name: { type: String, required: true, trim: true },
+    name: { type: String, required: true, trim: true, default:"demo test 1"},
     slug: { type: String, unique: true, sparse: true }, // ADD THIS
     coachingId: {
       type: mongoose.Schema.Types.ObjectId,
