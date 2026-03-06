@@ -7,52 +7,46 @@ const { setIO } = require("./src/socket");
 
 const PORT = process.env.PORT || 8080;
 
-// ── Allowed origins (same list as CORS in App.js) ───────────────────────────
 const ALLOWED_ORIGINS = (process.env.ALLOWED_ORIGINS || "")
   .split(",")
   .map((o) => o.trim())
   .filter(Boolean)
   .concat(["http://localhost:3000", "http://localhost:5173"]);
 
-// ── Create HTTP server from Express app ─────────────────────────────────────
 const httpServer = http.createServer(app);
 
-// ── Attach Socket.io ─────────────────────────────────────────────────────────
 const io = new Server(httpServer, {
   cors: {
     origin: ALLOWED_ORIGINS,
     credentials: true,
     methods: ["GET", "POST"],
   },
-  // Use websocket first, fall back to polling if websocket blocked
   transports: ["websocket", "polling"],
 });
 
-// ── Store io singleton so controllers can emit from anywhere ─────────────────
 setIO(io);
 
-// ── Socket connection handler ────────────────────────────────────────────────
 io.on("connection", (socket) => {
-  // Coach joins a room for their coaching so they get real-time updates
-  // Client emits: socket.emit("join:coaching", coachingId)
-  socket.on("join:coaching", (coachingId) => {
-    if (!coachingId) return;
-    const room = `coaching:${coachingId}`;
+  console.log(`[socket] connected: ${socket.id}`);
+
+  // Frontend emits "join-coaching" with full room string e.g. "coaching:abc123"
+  socket.on("join-coaching", (room) => {
+    if (!room) return;
     socket.join(room);
-    console.log(`[socket] ${socket.id} joined room ${room}`);
+    console.log(`[socket] ${socket.id} joined ${room}`);
   });
 
-  socket.on("leave:coaching", (coachingId) => {
-    if (!coachingId) return;
-    socket.leave(`coaching:${coachingId}`);
+  socket.on("leave-coaching", (room) => {
+    if (!room) return;
+    socket.leave(room);
+    console.log(`[socket] ${socket.id} left ${room}`);
   });
 
   socket.on("disconnect", () => {
-    // Rooms are automatically cleaned up on disconnect
+    console.log(`[socket] disconnected: ${socket.id}`);
   });
 });
 
-// ── Start ────────────────────────────────────────────────────────────────────
 async function start() {
   try {
     await connect();
