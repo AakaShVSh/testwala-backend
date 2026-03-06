@@ -1,129 +1,188 @@
 const express = require("express");
-const router = express.Router();
 const Test = require("../models/test.model");
 const Result = require("../models/result.model");
 const Question = require("../models/question.model");
+const Coaching = require("../models/coaching.model");
+const { requireAuth, optionalAuth } = require("../middlewares/auth.middleware");
+const { toSlug } = require("../utils/slug");
 
-const toSlug = (str) =>
-  str
-    .toLowerCase()
-    .trim()
-    .replace(/\s+/g, "-")
-    .replace(/[^a-z0-9-]/g, "");
+const router = express.Router();
 
-/* ─────────────────────────────────────────────
-   POST /tests/create
-───────────────────────────────────────────── */
-router.post("/create", async (req, res) => {
+/* ── helpers ─────────────────────────────────────────────────────────────── */
+const stripPassword = ({ password: _p, ...rest }) => rest;
+
+/**
+ * ownsCoaching — checks the test's coachingId belongs to req.user
+ */
+async function ownsCoaching(userId, coachingId) {
+  const coaching = await Coaching.findById(coachingId).lean();
+  return coaching && coaching.owner.toString() === userId.toString();
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   CREATE
+═══════════════════════════════════════════════════════════════════════════ */
+
+/* ── POST /tests/create ──────────────────────────────────────────────────────
+   Create a test manually (from questionDocIds or inlineQuestions).
+──────────────────────────────────────────────────────────────────────────── */
+router.post("/create", requireAuth, async (req, res, next) => {
   try {
-    const { title, questionDocIds, inlineQuestions, ...rest } = req.body;
-    if (!title) return res.status(400).send({ message: "title is required" });
-    if (!rest.createdBy)
-      return res
-        .status(400)
-        .send({ message: "createdBy (userId) is required" });
+    const { title, questionDocIds, inlineQuestions, coachingId, ...rest } =
+      req.body;
+    if (!title) return res.status(400).json({ message: "title is required" });
 
-    // Always generate a unique slug (title + timestamp)
+    // Verify the requesting user owns the coaching they're attaching to
+    if (
+      coachingId &&
+      !(await ownsCoaching(req.user._id, coachingId)) &&
+      !req.user.isAdmin
+    ) {
+      return res
+        .status(403)
+        .json({ message: "Not authorised for this coaching" });
+    }
+
     rest.slug = `${toSlug(title)}-${Date.now()}`;
+    rest.createdBy = req.user._id;
+    rest.coachingId = coachingId || null;
 
     let questions = [];
 
+    // Pull from question library
     if (Array.isArray(questionDocIds) && questionDocIds.length > 0) {
-      const docs = await Question.find({ _id: { $in: questionDocIds } })
-        .lean()
-        .exec();
-      docs.forEach((doc) => {
-        doc.question.forEach((item) => {
-          questions.push({ sourceId: item._id, ...item });
-        });
-      });
+      const docs = await Question.find({ _id: { $in: questionDocIds } }).lean();
+      docs.forEach((doc) =>
+        doc.question.forEach((item) =>
+          questions.push({ sourceId: item._id, ...item }),
+        ),
+      );
     }
 
+    // Inline questions (e.g. typed in by coach)
     if (Array.isArray(inlineQuestions) && inlineQuestions.length > 0) {
       questions = [...questions, ...inlineQuestions];
     }
 
-    // Sync visibility → accessType
-    if (rest.visibility && !rest.accessType) rest.accessType = rest.visibility;
-
     const test = await Test.create({ title, questions, ...rest });
-    return res.status(201).send({ message: "Test created", data: test });
-  } catch (error) {
-    console.error("Create test error:", error);
-    return res.status(400).send({ message: error.message });
+    return res.status(201).json({ message: "Test created", data: test });
+  } catch (err) {
+    next(err);
   }
 });
 
-/* ─────────────────────────────────────────────
-   GET /tests
-   Returns test metadata only (no questions, no password).
-───────────────────────────────────────────── */
-router.get("/", async (req, res) => {
+/* ═══════════════════════════════════════════════════════════════════════════
+   READ — specific named routes MUST come before the /:slug wildcard
+═══════════════════════════════════════════════════════════════════════════ */
+
+/* ── GET /tests ──────────────────────────────────────────────────────────────
+   Public list (no questions, no passwords).
+──────────────────────────────────────────────────────────────────────────── */
+router.get("/", async (req, res, next) => {
   try {
-    const filter = { isActive: true };
+    const filter = { isActive: true, visibility: "public" };
     if (req.query.coachingId) filter.coachingId = req.query.coachingId;
     if (req.query.examType) filter.examType = req.query.examType;
     if (req.query.subject) filter.subject = req.query.subject.toLowerCase();
-    if (req.query.visibility) filter.visibility = req.query.visibility;
 
-    const tests = await Test.find(filter)
-      .select("-questions -password")
-      .lean()
-      .exec();
-    return res.status(200).send({ status: 200, data: tests });
-  } catch (error) {
-    return res.status(500).send({ message: error.message });
+    const tests = await Test.find(filter).select("-questions -password").lean();
+    return res.json({ status: 200, data: tests });
+  } catch (err) {
+    next(err);
   }
 });
 
-/* ─────────────────────────────────────────────
-   GET /tests/id/:id
-   Get full test by mongo _id (admin / coach use).
-───────────────────────────────────────────── */
-router.get("/id/:id", async (req, res) => {
+/* ── GET /tests/id/:id ───────────────────────────────────────────────────────
+   Full test by Mongo _id. Coach / admin use — also returns parse status.
+──────────────────────────────────────────────────────────────────────────── */
+router.get("/id/:id", requireAuth, async (req, res, next) => {
   try {
-    const test = await Test.findById(req.params.id).lean().exec();
-    if (!test) return res.status(404).send({ message: "Not found" });
-    const { password: _p, ...safeTest } = test;
-    return res.status(200).send({ status: 200, data: safeTest });
-  } catch (error) {
-    return res.status(500).send({ error: error.message });
+    const test = await Test.findById(req.params.id).lean();
+    if (!test) return res.status(404).json({ message: "Test not found" });
+
+    // Only owner or admin
+    const isOwner =
+      test.coachingId && (await ownsCoaching(req.user._id, test.coachingId));
+    if (!isOwner && !req.user.isAdmin) {
+      return res.status(403).json({ message: "Not authorised" });
+    }
+
+    return res.json({ status: 200, data: stripPassword(test) });
+  } catch (err) {
+    next(err);
   }
 });
 
-/* ─────────────────────────────────────────────
-   GET /tests/:id/leaderboard
-───────────────────────────────────────────── */
-router.get("/:id/leaderboard", async (req, res) => {
+/* ── GET /tests/token/:token ─────────────────────────────────────────────────
+   WhatsApp share-link access — returns full test (student view).
+──────────────────────────────────────────────────────────────────────────── */
+router.get("/token/:token", optionalAuth, async (req, res, next) => {
   try {
+    const test = await Test.findOne({
+      accessToken: req.params.token,
+      isActive: true,
+    }).lean();
+    if (!test)
+      return res
+        .status(404)
+        .json({ message: "Test not found or link expired" });
+
+    const { password: _p, accessToken: _t, ...safeTest } = test;
+    return res.json({ status: 200, data: safeTest });
+  } catch (err) {
+    next(err);
+  }
+});
+
+/* ── GET /tests/:id/leaderboard ──────────────────────────────────────────────
+   Top 50 results for coach view (must be before /:slug)
+──────────────────────────────────────────────────────────────────────────── */
+router.get("/:id/leaderboard", requireAuth, async (req, res, next) => {
+  try {
+    const test = await Test.findById(req.params.id).lean();
+    if (!test) return res.status(404).json({ message: "Test not found" });
+
+    const isOwner =
+      test.coachingId && (await ownsCoaching(req.user._id, test.coachingId));
+    if (!isOwner && !req.user.isAdmin) {
+      return res.status(403).json({ message: "Not authorised" });
+    }
+
     const results = await Result.find({ testId: req.params.id })
-      .sort({ scorePercentage: -1, timeTakenSec: 1 })
-      .limit(20)
-      .populate("studentId", "Name Email")
-      .select("-questions -allAnswer")
-      .lean()
-      .exec();
-    return res.status(200).send({ status: 200, data: results });
-  } catch (error) {
-    return res.status(500).send({ error: error.message });
+      .sort({ percentage: -1, timeTaken: 1 })
+      .limit(50)
+      .populate("studentId", "Name Email Phone")
+      .select(
+        "-allAnswers -correctQus -wrongQus -answeredQus -notAnsweredQus -markedAndAnswered -markedNotAnswered",
+      )
+      .lean();
+
+    return res.json({ status: 200, data: results });
+  } catch (err) {
+    next(err);
   }
 });
 
-/* ─────────────────────────────────────────────
-   GET /tests/:id/stats
-   Aggregate stats for a test (for coach detail view)
-───────────────────────────────────────────── */
-router.get("/:id/stats", async (req, res) => {
+/* ── GET /tests/:id/stats ────────────────────────────────────────────────────
+   Aggregate stats — coach dashboard (must be before /:slug)
+──────────────────────────────────────────────────────────────────────────── */
+router.get("/:id/stats", requireAuth, async (req, res, next) => {
   try {
-    const testId = req.params.id;
-    const results = await Result.find({ testId }).lean().exec();
+    const test = await Test.findById(req.params.id).lean();
+    if (!test) return res.status(404).json({ message: "Test not found" });
 
+    const isOwner =
+      test.coachingId && (await ownsCoaching(req.user._id, test.coachingId));
+    if (!isOwner && !req.user.isAdmin) {
+      return res.status(403).json({ message: "Not authorised" });
+    }
+
+    const results = await Result.find({ testId: req.params.id }).lean();
     if (!results.length) {
-      return res.status(200).send({
+      return res.json({
         status: 200,
         data: {
           totalAttempts: 0,
-          avgScore: 0,
           avgPercentage: 0,
           passCount: 0,
           passRate: 0,
@@ -133,117 +192,100 @@ router.get("/:id/stats", async (req, res) => {
       });
     }
 
+    const scores = results.map((r) => r.percentage || 0);
     const totalAttempts = results.length;
-    const scores = results.map((r) => r.scorePercentage || r.percentage || 0);
-    const avgPercentage = scores.reduce((a, b) => a + b, 0) / totalAttempts;
-    const passCount = results.filter(
-      (r) => (r.scorePercentage || r.percentage || 0) >= 40,
-    ).length;
+    const avgPercentage = Math.round(
+      scores.reduce((a, b) => a + b, 0) / totalAttempts,
+    );
+    const passCount = results.filter((r) => r.isPassed).length;
 
-    return res.status(200).send({
+    return res.json({
       status: 200,
       data: {
         totalAttempts,
-        avgPercentage: Math.round(avgPercentage),
+        avgPercentage,
         passCount,
         passRate: Math.round((passCount / totalAttempts) * 100),
         highestScore: Math.max(...scores),
         lowestScore: Math.min(...scores),
       },
     });
-  } catch (error) {
-    return res.status(500).send({ error: error.message });
+  } catch (err) {
+    next(err);
   }
 });
 
-/* ─────────────────────────────────────────────
-   GET /tests/token/:token
-   Access a private test via access token (share link)
-───────────────────────────────────────────── */
-router.get("/token/:token", async (req, res) => {
+/* ── PATCH /tests/:id ────────────────────────────────────────────────────────
+   Update test fields. Owner only.
+──────────────────────────────────────────────────────────────────────────── */
+router.patch("/:id", requireAuth, async (req, res, next) => {
+  try {
+    const test = await Test.findById(req.params.id).lean();
+    if (!test) return res.status(404).json({ message: "Not found" });
+
+    const isOwner =
+      test.coachingId && (await ownsCoaching(req.user._id, test.coachingId));
+    if (!isOwner && !req.user.isAdmin) {
+      return res.status(403).json({ message: "Not authorised" });
+    }
+
+    // Never let clients overwrite sensitive fields this way
+    delete req.body.createdBy;
+    delete req.body.accessToken;
+    delete req.body.totalAttempts;
+
+    const updated = await Test.findByIdAndUpdate(req.params.id, req.body, {
+      new: true,
+      runValidators: true,
+    }).lean();
+
+    return res.json({ message: "Test updated", data: stripPassword(updated) });
+  } catch (err) {
+    next(err);
+  }
+});
+
+/* ── DELETE /tests/:id  (soft delete) ────────────────────────────────────── */
+router.delete("/:id", requireAuth, async (req, res, next) => {
+  try {
+    const test = await Test.findById(req.params.id).lean();
+    if (!test) return res.status(404).json({ message: "Not found" });
+
+    const isOwner =
+      test.coachingId && (await ownsCoaching(req.user._id, test.coachingId));
+    if (!isOwner && !req.user.isAdmin) {
+      return res.status(403).json({ message: "Not authorised" });
+    }
+
+    await Test.findByIdAndUpdate(req.params.id, { isActive: false });
+    return res.json({ message: "Test deactivated" });
+  } catch (err) {
+    next(err);
+  }
+});
+
+/* ── GET /tests/:slug ────────────────────────────────────────────────────────
+   Public test page by slug — MUST be last route.
+   Private tests require ?password=xxx
+──────────────────────────────────────────────────────────────────────────── */
+router.get("/:slug", optionalAuth, async (req, res, next) => {
   try {
     const test = await Test.findOne({
-      accessToken: req.params.token,
+      slug: req.params.slug,
       isActive: true,
-    })
-      .lean()
-      .exec();
-    if (!test)
-      return res
-        .status(404)
-        .send({ message: "Test not found or link expired" });
-    const { password: _p, accessToken: _t, ...safeTest } = test;
-    return res.status(200).send({ status: 200, data: safeTest });
-  } catch (error) {
-    return res.status(500).send({ error: error.message });
-  }
-});
+    }).lean();
+    if (!test) return res.status(404).json({ message: "Test not found" });
 
-/* ─────────────────────────────────────────────
-   GET /tests/:slug
-   Public test page by URL slug.
-───────────────────────────────────────────── */
-router.get("/:slug", async (req, res) => {
-  try {
-    const test = await Test.findOne({ slug: req.params.slug, isActive: true })
-      .lean()
-      .exec();
-    if (!test) return res.status(404).send({ message: "Test not found" });
-
-    if (test.visibility === "private" || test.accessType === "private") {
+    if (test.visibility === "private") {
       if (!req.query.password || req.query.password !== test.password) {
-        return res
-          .status(403)
-          .send({
-            message: "Invalid or missing password for this private test",
-          });
+        return res.status(403).json({ message: "Invalid or missing password" });
       }
     }
 
     const { password: _p, ...safeTest } = test;
-    return res.status(200).send({ status: 200, data: safeTest });
-  } catch (error) {
-    return res.status(500).send({ error: error.message });
-  }
-});
-
-/* ─────────────────────────────────────────────
-   PATCH /tests/:id
-───────────────────────────────────────────── */
-router.patch("/:id", async (req, res) => {
-  try {
-    if (req.body.visibility) req.body.accessType = req.body.visibility;
-    const test = await Test.findByIdAndUpdate(req.params.id, req.body, {
-      new: true,
-      runValidators: true,
-    })
-      .lean()
-      .exec();
-    if (!test) return res.status(404).send({ message: "Not found" });
-    return res
-      .status(200)
-      .send({ message: "Test updated successfully", data: test });
-  } catch (error) {
-    return res.status(400).send({ error: error.message });
-  }
-});
-
-/* ─────────────────────────────────────────────
-   DELETE /tests/:id  (soft delete)
-───────────────────────────────────────────── */
-router.delete("/:id", async (req, res) => {
-  try {
-    const test = await Test.findByIdAndUpdate(
-      req.params.id,
-      { isActive: false },
-      { new: true },
-    )
-      .lean()
-      .exec();
-    if (!test) return res.status(404).send({ message: "Not found" });
-    return res.status(200).send({ message: "Test deactivated" });
-  } catch (error) {
-    return res.status(500).send({ error: error.message });
+    return res.json({ status: 200, data: safeTest });
+  } catch (err) {
+    next(err);
   }
 });
 

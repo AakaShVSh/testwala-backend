@@ -1,113 +1,45 @@
 const mongoose = require("mongoose");
 const bcrypt = require("bcrypt");
+
 const UserSchema = new mongoose.Schema(
   {
+    Name: { type: String, trim: true, default: "User" },
     Email: {
       type: String,
       trim: true,
+      lowercase: true,
       unique: true,
-      match: /.+\@.+\..+/,
       required: true,
+      match: /.+@.+\..+/,
     },
-    Password: {
-      type: String,
-      required: true,
-    },
-    Name: {
-      type: String,
-      trim: true,
-      default: "user",
-    },
-    registeredAt: {
-      type: Date,
-      default: Date.now,
-    },
-    lastLogin: {
-      type: Date,
+    Password: { type: String, required: true },
+    Phone: { type: String, default: "" },
+    isAdmin: { type: Boolean, default: false },
+
+    // If this user owns a coaching centre, store its ref here
+    coachingId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "Coaching",
+      default: null,
     },
 
-    TotalMark: {
-      type: Number,
-      default: 0,
-    },
-    // profilePicture: {
-    //   type: String, // URL to the profile picture
-    // },
-    // address: {
-    //   street: {
-    //     type: String,
-    //   },
-    //   city: {
-    //     type: String,
-    //   },
-    //   state: {
-    //     type: String,
-    //   },
-    //   country: {
-    //     type: String,
-    //   },
-    //   zipCode: {
-    //     type: String,
-    //   },
-    // },
-    Phone: {
-      type: String,
-    },
-    // testTaken: [
-    //   {
-    //     testId: {
-    //       type: mongoose.Schema.Types.ObjectId,
-    //       ref: "Test",
-    //     },
-    //     score: {
-    //       type: Number,
-    //     },
-    //     takenAt: {
-    //       type: Date,
-    //       default: Date.now,
-    //     },
-    //   },
-    // ],
-    Rank: {
-      type: Number,
-      default: 0,
-    },
-    isAdmin: {
-      type: Boolean,
-      default: false,
-    },
-    Preferences: {
-      // notifications: {
-      // email: {
-      //   type: Boolean,
-      //   default: true,
-      // },
-      // sms: {
-      //   type: Boolean,
-      //   default: false,
-      // },
-      // },
-      theme: {
-        type: String,
-        enum: ["light", "dark"],
-        default: "light",
-      },
+    lastLogin: { type: Date },
+    preferences: {
+      theme: { type: String, enum: ["light", "dark"], default: "light" },
     },
   },
-  {
-    versionKey: false,
-    timestamps: true,
-  }
+  { versionKey: false, timestamps: true },
 );
 
-UserSchema.pre("save", function (next) {
-  const hash = bcrypt.hashSync(this.Password, 10);
-  this.Password = hash;
+/* Hash password before first save only */
+UserSchema.pre("save", async function (next) {
+  if (!this.isModified("Password")) return next();
+  this.Password = await bcrypt.hash(this.Password, 12);
   next();
 });
 
-UserSchema.methods.checkPassword = function (password) {
-  return bcrypt.compareSync(password, this.Password);
+UserSchema.methods.checkPassword = function (plain) {
+  return bcrypt.compareSync(plain, this.Password);
 };
 
 module.exports = mongoose.model("User", UserSchema);
