@@ -1,103 +1,52 @@
-// const express = require("express");
-// const cookies = require("cookie-parser");
-// const app = express();
-// const cors = require("cors");
-// const QuestionMathController = require("./controllers/question.math.controller");
-// const QuestionEngController = require("./controllers/question.Eng.controller");
-// const QuestionVocabularyController = require("./controllers/question.vocabulary.controller");
-// const QuestionmathTwoController = require("./controllers/question.mathTwo.controller");
-// const QuestionGsController = require("./controllers/question.gs.controller");
-// const QuestionReasoningController = require("./controllers/question.reasoning");
-
-// const RegistrationController = require("./controllers/auth.controller");
-// const UserTestDataController = require("./controllers/UserTest.Controller");
-// app.use(express.json());
-// app.use(cookies());
-// app.use(cors());
-
-// app.use("/auth",RegistrationController);
-// app.use("/QuestionStorage/math", QuestionMathController);
-// app.use("/QuestionStorage/Eng", QuestionEngController);
-// app.use("/QuestionStorage/gs", QuestionGsController);
-// app.use("/QuestionStorage/Reasoning", QuestionReasoningController);
-// app.use("/QuestionStorage/vocabulary", QuestionVocabularyController);
-// app.use("/QuestionStorage/mathtwo", QuestionmathTwoController);
-// app.use("/UserTestData", UserTestDataController);
-
-// module.exports = app;
-
-// // veAY7D4e3WngFJif8uy8g897t6g8h76767rgr765677y5675r566rf6r5765d658477t67;
-
-// const express = require("express");
-// const cookies = require("cookie-parser");
-// const cors = require("cors");
-// const app = express();
-
-// // ── Unified question controller (replaces all 6 subject controllers) ──
-// const QuestionController = require("./controllers/question.controller");
-
-// // ── Other controllers (unchanged) ──
-// const RegistrationController = require("./controllers/auth.controller");
-// const UserTestDataController = require("./controllers/UserTest.Controller");
-
-// app.use(express.json());
-// app.use(cookies());
-// app.use(cors());
-
-// // Auth
-// app.use("/auth", RegistrationController);
-
-// // Single route handles ALL subjects — filter via ?subject=math, ?subject=english, etc.
-// app.use("/questions", QuestionController);
-
-// // User test data
-// app.use("/UserTestData", UserTestDataController);
-
-// module.exports = app;
-
 const express = require("express");
 const cookieParser = require("cookie-parser");
 const cors = require("cors");
+
 const app = express();
 
-app.use(express.json());
-const allowedOrigins = [
-  "https://revisionkarlo.in",
-  "https://www.revisionkarlo.in",
-  "http://localhost:3000",
-];
+/* ── CORS ───────────────────────────────────────────────────────────────── */
+const ALLOWED_ORIGINS = (process.env.ALLOWED_ORIGINS || "")
+  .split(",")
+  .map((o) => o.trim())
+  .filter(Boolean)
+  .concat(["http://localhost:3000", "http://localhost:5173"]);
 
 app.use(
   cors({
-    origin: function (origin, callback) {
-      if (!origin || allowedOrigins.includes(origin)) {
-        callback(null, true);
-      } else {
-        callback(new Error("Not allowed by CORS"));
-      }
+    origin(origin, cb) {
+      if (!origin || ALLOWED_ORIGINS.includes(origin)) return cb(null, true);
+      cb(new Error(`CORS: origin ${origin} not allowed`));
     },
     credentials: true,
     methods: ["GET", "POST", "PUT", "PATCH", "DELETE"],
     allowedHeaders: ["Content-Type", "Authorization"],
   }),
 );
+
+/* ── Body / Cookie parsers ──────────────────────────────────────────────── */
+app.use(express.json({ limit: "10mb" }));
+app.use(express.urlencoded({ extended: true, limit: "10mb" }));
 app.use(cookieParser());
 
-app.use(express.json());
-app.use(express.urlencoded({ extended: true }));
+/* ── Health check ───────────────────────────────────────────────────────── */
+app.get("/health", (_req, res) => res.json({ ok: true }));
 
-// ── Auth ──────────────────────────────────────────────────────────────────
+/* ── Routes ─────────────────────────────────────────────────────────────── */
 app.use("/auth", require("./controllers/auth.controller"));
-
-// ── Questions (all subjects via ?subject=math, ?subject=english …) ────────
-app.use("/questions", require("./controllers/question.controller"));
-
-// ── User test data ────────────────────────────────────────────────────────
-app.use("/UserTestData", require("./controllers/UserTest.Controller"));
-
-// ── Coaching, Tests, Results ──────────────────────────────────────────────
 app.use("/coaching", require("./controllers/coaching.controller"));
 app.use("/tests", require("./controllers/test.controller"));
 app.use("/results", require("./controllers/result.controller"));
+app.use("/questions", require("./controllers/question.controller"));
+
+/* ── 404 catch-all ──────────────────────────────────────────────────────── */
+app.use((_req, res) => res.status(404).json({ message: "Route not found" }));
+
+/* ── Global error handler ───────────────────────────────────────────────── */
+app.use((err, _req, res, _next) => {
+  console.error(err);
+  res
+    .status(err.status || 500)
+    .json({ message: err.message || "Server error" });
+});
 
 module.exports = app;

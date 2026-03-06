@@ -1,125 +1,366 @@
 const express = require("express");
-const router = express.Router();
 const Coaching = require("../models/coaching.model");
+const User = require("../models/User.model");
+const Test = require("../models/test.model");
+const Result = require("../models/result.model");
+const { requireAuth } = require("../middlewares/auth.middleware");
+const { toSlug } = require("../utils/slug");
 
-const toSlug = (str) =>
-  str
-    .toLowerCase()
-    .trim()
-    .replace(/\s+/g, "-")
-    .replace(/[^a-z0-9-]/g, "");
+const router = express.Router();
 
-/* ─────────────────────────────────────────────
-   POST /coaching/create
-   Body: { name, examTypes[], email?, phone?, city?, website?, ownerId?, slug? }
-   slug auto-generated from name if not provided.
-   examTypes: "SSC" | "UPSC" | "BANKING" | "RAILWAY" | "STATE_PSC" | "OTHER"
-───────────────────────────────────────────── */
-router.post("/create", async (req, res) => {
+/* ── helper: attach live attempt counts from Results collection ─────────────
+   Takes an array of test docs, returns same array with totalAttempts
+   computed from the Results collection (never stale).
+──────────────────────────────────────────────────────────────────────────── */
+async function withLiveAttempts(tests) {
+  if (!tests.length) return tests;
+  const testIds = tests.map((t) => t._id);
+  const counts = await Result.aggregate([
+    { $match: { testId: { $in: testIds } } },
+    { $group: { _id: "$testId", count: { $sum: 1 } } },
+  ]);
+  const countMap = {};
+  counts.forEach((c) => {
+    countMap[c._id.toString()] = c.count;
+  });
+  return tests.map((t) => ({
+    ...t,
+    totalAttempts: countMap[t._id.toString()] ?? 0,
+  }));
+}
+
+/* ── POST /coaching/create ───────────────────────────────────────────────────
+   Only authenticated users can create a coaching.
+   After creation the user's coachingId is updated to link them.
+──────────────────────────────────────────────────────────────────────────── */
+router.post("/create", requireAuth, async (req, res, next) => {
   try {
-    const { name, slug } = req.body;
-    if (!name) return res.status(400).send({ message: "name is required" });
+    const { name } = req.body;
+    if (!name) return res.status(400).json({ message: "name is required" });
 
-    req.body.slug = slug || toSlug(name);
-
-    const coaching = await Coaching.create(req.body);
-    return res
-      .status(201)
-      .send({ message: "Coaching created", data: coaching });
-  } catch (error) {
-    if (error.code === 11000)
+    if (req.user.coachingId) {
       return res
         .status(409)
-        .send({
-          message:
-            "Slug already exists. Try a different name or pass a custom slug.",
-        });
-    return res.status(400).send({ message: error.message });
+        .json({ message: "You already have a coaching centre" });
+    }
+
+    req.body.slug = req.body.slug || `${toSlug(name)}-${Date.now()}`;
+    req.body.owner = req.user._id;
+
+    const coaching = await Coaching.create(req.body);
+    await User.findByIdAndUpdate(req.user._id, { coachingId: coaching._id });
+
+    return res
+      .status(201)
+      .json({ message: "Coaching created", data: coaching });
+  } catch (err) {
+    if (err.code === 11000)
+      return res.status(409).json({ message: "Slug already taken" });
+    next(err);
   }
 });
 
-/* ─────────────────────────────────────────────
-   GET /coaching
-   Returns all active coachings.
-   Examples:
-     GET /coaching
-     GET /coaching?examType=SSC
-     GET /coaching?city=Delhi
-───────────────────────────────────────────── */
-router.get("/", async (req, res) => {
+/* ── GET /coaching ───────────────────────────────────────────────────────────
+   Public list — used by students to browse coachings.
+──────────────────────────────────────────────────────────────────────────── */
+router.get("/", async (req, res, next) => {
   try {
     const filter = { isActive: true };
     if (req.query.examType) filter.examTypes = req.query.examType;
     if (req.query.city) filter.city = new RegExp(req.query.city, "i");
 
-    const list = await Coaching.find(filter).lean().exec();
-    return res.status(200).send({ status: 200, data: list });
-  } catch (error) {
-    return res.status(500).send({ message: error.message });
+    const list = await Coaching.find(filter)
+      .select("-__v")
+      .populate("owner", "Name Email")
+      .lean();
+
+    return res.json({ status: 200, data: list });
+  } catch (err) {
+    next(err);
   }
 });
 
-/* ─────────────────────────────────────────────
-   GET /coaching/:slug
-   Get one coaching by its URL slug e.g. "vision-ias".
-───────────────────────────────────────────── */
-router.get("/:slug", async (req, res) => {
+/* ── GET /coaching/mine ──────────────────────────────────────────────────────
+   Returns the coach's own coaching + dashboard stats.
+   totalAttempts per test is computed LIVE from Results collection.
+──────────────────────────────────────────────────────────────────────────── */
+router.get("/mine", requireAuth, async (req, res, next) => {
+  try {
+    if (!req.user.coachingId) {
+      return res
+        .status(404)
+        .json({ message: "You do not have a coaching centre" });
+    }
+
+    const coaching = await Coaching.findById(req.user.coachingId).lean();
+    if (!coaching)
+      return res.status(404).json({ message: "Coaching not found" });
+
+    // Unique students across all tests of this coaching
+    const uniqueStudents = await Result.distinct("studentId", {
+      coachingId: coaching._id,
+    });
+
+    // All active tests
+    const rawTests = await Test.find({
+      coachingId: coaching._id,
+      isActive: true,
+    })
+      .select(
+        "title slug examType subject timeLimitMin totalMarks visibility accessToken createdAt",
+      )
+      .lean();
+
+    // ── Live attempt counts from Results (source of truth, never stale) ──
+    const tests = await withLiveAttempts(rawTests);
+
+    return res.json({
+      status: 200,
+      data: {
+        ...coaching,
+        totalStudents: uniqueStudents.length,
+        tests,
+      },
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
+/* ── GET /coaching/students ──────────────────────────────────────────────────
+   Coach sees all students under their coaching with summary stats.
+──────────────────────────────────────────────────────────────────────────── */
+router.get("/students", requireAuth, async (req, res, next) => {
+  try {
+    if (!req.user.coachingId) {
+      return res.status(403).json({ message: "Not a coaching owner" });
+    }
+
+    const coachingId = req.user.coachingId;
+
+    const results = await Result.find({ coachingId })
+      .populate("studentId", "Name Email Phone")
+      .populate("testId", "title totalMarks examType")
+      .select(
+        "studentId testId score totalQuestions percentage percentile timeTaken createdAt",
+      )
+      .sort({ createdAt: -1 })
+      .lean();
+
+    const studentMap = {};
+    results.forEach((r) => {
+      if (!r.studentId) return;
+      const sid = r.studentId._id.toString();
+      if (!studentMap[sid]) {
+        studentMap[sid] = {
+          _id: r.studentId._id,
+          Name: r.studentId.Name,
+          Email: r.studentId.Email,
+          Phone: r.studentId.Phone,
+          totalTests: 0,
+          totalScore: 0,
+          totalMarks: 0,
+          percentages: [],
+          percentiles: [],
+          lastAttempt: null,
+        };
+      }
+      const s = studentMap[sid];
+      s.totalTests += 1;
+      s.totalScore += r.score || 0;
+      s.totalMarks += r.testId?.totalMarks || r.totalQuestions || 0;
+      s.percentages.push(r.percentage || 0);
+      s.percentiles.push(r.percentile || 0);
+      if (!s.lastAttempt || new Date(r.createdAt) > new Date(s.lastAttempt)) {
+        s.lastAttempt = r.createdAt;
+      }
+    });
+
+    const students = Object.values(studentMap).map((s) => ({
+      _id: s._id,
+      Name: s.Name,
+      Email: s.Email,
+      Phone: s.Phone,
+      totalTests: s.totalTests,
+      totalScore: s.totalScore,
+      totalMarks: s.totalMarks,
+      avgPercentage: s.percentages.length
+        ? Math.round(
+            s.percentages.reduce((a, b) => a + b, 0) / s.percentages.length,
+          )
+        : 0,
+      avgPercentile: s.percentiles.length
+        ? Math.round(
+            s.percentiles.reduce((a, b) => a + b, 0) / s.percentiles.length,
+          )
+        : 0,
+      lastAttempt: s.lastAttempt,
+    }));
+
+    return res.json({ status: 200, data: students });
+  } catch (err) {
+    next(err);
+  }
+});
+
+/* ── GET /coaching/students/:studentId ───────────────────────────────────────
+   Full analytics of one student under the coach's coaching.
+──────────────────────────────────────────────────────────────────────────── */
+router.get("/students/:studentId", requireAuth, async (req, res, next) => {
+  try {
+    if (!req.user.coachingId) {
+      return res.status(403).json({ message: "Not a coaching owner" });
+    }
+
+    const coachingId = req.user.coachingId;
+    const { studentId } = req.params;
+
+    const student = await User.findById(studentId)
+      .select("Name Email Phone createdAt")
+      .lean();
+    if (!student) return res.status(404).json({ message: "Student not found" });
+
+    const results = await Result.find({ coachingId, studentId })
+      .populate("testId", "title examType totalMarks timeLimitMin slug")
+      .select(
+        "testId score totalQuestions wrongAnswers skipped percentage percentile timeTaken isPassed createdAt",
+      )
+      .sort({ createdAt: -1 })
+      .lean();
+
+    const totalTests = results.length;
+    const totalScore = results.reduce((a, r) => a + (r.score || 0), 0);
+    const totalMarks = results.reduce(
+      (a, r) => a + (r.testId?.totalMarks || r.totalQuestions || 0),
+      0,
+    );
+    const avgPercentage = totalTests
+      ? Math.round(
+          results.reduce((a, r) => a + (r.percentage || 0), 0) / totalTests,
+        )
+      : 0;
+    const avgPercentile = totalTests
+      ? Math.round(
+          results.reduce((a, r) => a + (r.percentile || 0), 0) / totalTests,
+        )
+      : 0;
+    const totalTimeTaken = results.reduce((a, r) => a + (r.timeTaken || 0), 0);
+    const passedTests = results.filter((r) => r.isPassed).length;
+    const highestScore = results.length
+      ? Math.max(...results.map((r) => r.percentage || 0))
+      : 0;
+
+    return res.json({
+      status: 200,
+      data: {
+        student,
+        summary: {
+          totalTests,
+          totalScore,
+          totalMarks,
+          avgPercentage,
+          avgPercentile,
+          totalTimeTaken,
+          passedTests,
+          highestScore,
+        },
+        attempts: results.map((r) => ({
+          _id: r._id,
+          test: r.testId,
+          score: r.score,
+          totalQuestions: r.totalQuestions,
+          wrongAnswers: r.wrongAnswers,
+          skipped: r.skipped,
+          percentage: r.percentage,
+          percentile: r.percentile,
+          timeTaken: r.timeTaken,
+          isPassed: r.isPassed,
+          date: r.createdAt,
+        })),
+      },
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
+/* ── GET /coaching/:slug ─────────────────────────────────────────────────────
+   Public coaching page — students see this.
+   totalAttempts computed live from Results collection.
+──────────────────────────────────────────────────────────────────────────── */
+router.get("/:slug", async (req, res, next) => {
   try {
     const coaching = await Coaching.findOne({
       slug: req.params.slug,
       isActive: true,
     })
-      .lean()
-      .exec();
+      .populate("owner", "Name")
+      .lean();
     if (!coaching)
-      return res.status(404).send({ message: "Coaching not found" });
-    return res.status(200).send({ status: 200, data: coaching });
-  } catch (error) {
-    return res.status(500).send({ message: error.message });
+      return res.status(404).json({ message: "Coaching not found" });
+
+    const rawTests = await Test.find({
+      coachingId: coaching._id,
+      isActive: true,
+      visibility: "public",
+    })
+      .select("title slug examType subject timeLimitMin totalMarks createdAt")
+      .lean();
+
+    // ── Live attempt counts ──
+    const tests = await withLiveAttempts(rawTests);
+
+    return res.json({ status: 200, data: { ...coaching, tests } });
+  } catch (err) {
+    next(err);
   }
 });
 
-/* ─────────────────────────────────────────────
-   PATCH /coaching/:id
-   Update any field. If name changes, slug is auto-regenerated
-   unless a custom slug is also passed in the body.
-───────────────────────────────────────────── */
-router.patch("/:id", async (req, res) => {
+/* ── PATCH /coaching/:id ─────────────────────────────────────────────────────
+   Owner-only update.
+──────────────────────────────────────────────────────────────────────────── */
+router.patch("/:id", requireAuth, async (req, res, next) => {
   try {
+    const coaching = await Coaching.findById(req.params.id).lean();
+    if (!coaching) return res.status(404).json({ message: "Not found" });
+
+    if (
+      coaching.owner.toString() !== req.user._id.toString() &&
+      !req.user.isAdmin
+    ) {
+      return res.status(403).json({ message: "Not authorised" });
+    }
+
     if (req.body.name && !req.body.slug) {
       req.body.slug = toSlug(req.body.name);
     }
-    const coaching = await Coaching.findByIdAndUpdate(req.params.id, req.body, {
+
+    const updated = await Coaching.findByIdAndUpdate(req.params.id, req.body, {
       new: true,
-    })
-      .lean()
-      .exec();
-    if (!coaching) return res.status(404).send({ message: "Not found" });
-    return res
-      .status(200)
-      .send({ message: "Coaching updated", data: coaching });
-  } catch (error) {
-    return res.status(400).send({ message: error.message });
+    }).lean();
+    return res.json({ message: "Coaching updated", data: updated });
+  } catch (err) {
+    next(err);
   }
 });
 
-/* ─────────────────────────────────────────────
-   DELETE /coaching/:id
-   Soft delete — sets isActive: false so data is preserved.
-───────────────────────────────────────────── */
-router.delete("/:id", async (req, res) => {
+/* ── DELETE /coaching/:id  (soft delete) ─────────────────────────────────── */
+router.delete("/:id", requireAuth, async (req, res, next) => {
   try {
-    const coaching = await Coaching.findByIdAndUpdate(
-      req.params.id,
-      { isActive: false },
-      { new: true },
-    )
-      .lean()
-      .exec();
-    if (!coaching) return res.status(404).send({ message: "Not found" });
-    return res.status(200).send({ message: "Coaching deactivated" });
-  } catch (error) {
-    return res.status(500).send({ message: error.message });
+    const coaching = await Coaching.findById(req.params.id).lean();
+    if (!coaching) return res.status(404).json({ message: "Not found" });
+
+    if (
+      coaching.owner.toString() !== req.user._id.toString() &&
+      !req.user.isAdmin
+    ) {
+      return res.status(403).json({ message: "Not authorised" });
+    }
+
+    await Coaching.findByIdAndUpdate(req.params.id, { isActive: false });
+    return res.json({ message: "Coaching deactivated" });
+  } catch (err) {
+    next(err);
   }
 });
 

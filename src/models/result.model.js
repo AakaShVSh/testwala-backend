@@ -1,8 +1,5 @@
 const mongoose = require("mongoose");
 
-/**
- * Result = one student's attempt at one Test.
- */
 const ResultSchema = new mongoose.Schema(
   {
     studentId: {
@@ -28,10 +25,9 @@ const ResultSchema = new mongoose.Schema(
     percentage: { type: Number, default: 0 }, // auto-computed
     timeTaken: { type: Number, default: 0 }, // seconds
 
-    // Full answer map: { "0": 2, "1": 0 }  →  questionIndex: chosenOptionIndex
+    // Map: questionIndex → chosen option index  e.g. { "0": 2, "3": 1 }
     allAnswers: { type: Map, of: Number, default: {} },
 
-    // Question index arrays (mirrors your existing TakeTest state)
     correctQus: { type: [Number], default: [] },
     wrongQus: { type: [Number], default: [] },
     answeredQus: { type: [Number], default: [] },
@@ -39,27 +35,30 @@ const ResultSchema = new mongoose.Schema(
     markedAndAnswered: { type: [Number], default: [] },
     markedNotAnswered: { type: [Number], default: [] },
 
-    rank: { type: Number, default: 0 }, // populated later via leaderboard calc
     isPassed: { type: Boolean, default: false },
-    passingMark: { type: Number, default: 40 }, // minimum % to pass
+    passingMark: { type: Number, default: 40 }, // % required to pass
+
+    // Percentile is computed on-the-fly via leaderboard query, stored for caching
+    percentile: { type: Number, default: null },
   },
   { versionKey: false, timestamps: true },
 );
 
-// Auto-compute percentage + isPassed
+/* Auto-compute percentage + isPassed + skipped before first save */
 ResultSchema.pre("save", function (next) {
   if (this.totalQuestions > 0) {
     this.percentage = Math.round((this.score / this.totalQuestions) * 100);
     this.isPassed = this.percentage >= this.passingMark;
     this.skipped =
       this.totalQuestions -
-      this.answeredQus.length -
-      this.notAnsweredQus.length;
+      (this.answeredQus?.length || 0) -
+      (this.notAnsweredQus?.length || 0);
+    if (this.skipped < 0) this.skipped = 0;
   }
   next();
 });
 
 ResultSchema.index({ studentId: 1, testId: 1 });
-ResultSchema.index({ testId: 1, score: -1 }); // for leaderboard sort
+ResultSchema.index({ testId: 1, percentage: -1, timeTaken: 1 }); // leaderboard
 
 module.exports = mongoose.model("Result", ResultSchema);

@@ -1,243 +1,165 @@
 const express = require("express");
-const router = express.Router();
 const Question = require("../models/question.model");
+const { requireAuth, requireAdmin } = require("../middlewares/auth.middleware");
 
-/* ─────────────────────────────────────────────
-   HELPER – build a filter object from query params
-   Supported params: subject, section, topic, difficultyLevel
-   All are optional so you can filter as broadly or narrowly as needed.
-───────────────────────────────────────────── */
-const buildFilter = (query) => {
-  const filter = {};
-  if (query.subject) filter.subject = query.subject.toLowerCase().trim();
-  if (query.section) filter.section = new RegExp(`^${query.section}$`, "i");
-  if (query.topic) filter.topic = new RegExp(`^${query.topic}$`, "i");
-  if (query.difficultyLevel) filter.difficultyLevel = query.difficultyLevel;
-  return filter;
+const router = express.Router();
+
+const buildFilter = (q) => {
+  const f = {};
+  if (q.subject) f.subject = q.subject.toLowerCase().trim();
+  if (q.section) f.section = new RegExp(`^${q.section}$`, "i");
+  if (q.topic) f.topic = new RegExp(`^${q.topic}$`, "i");
+  if (q.difficultyLevel) f.difficultyLevel = q.difficultyLevel;
+  return f;
 };
 
-/* ─────────────────────────────────────────────
-   GET /questions
-   Returns all questions, or filtered by query params.
-
-   Examples:
-     GET /questions                              → all
-     GET /questions?subject=math                 → all math
-     GET /questions?subject=english&section=Verbal
-     GET /questions?subject=gs&topic=History&difficultyLevel=hard
-───────────────────────────────────────────── */
-router.get("/", async (req, res) => {
+/* ── GET /questions/subjects ─────────────────────────────────────────────────
+   Returns full subject→section→topics tree.
+   Used by frontend to build menus — NO local hardcoding needed.
+──────────────────────────────────────────────────────────────────────────── */
+router.get("/subjects", async (req, res, next) => {
   try {
-    const filter = buildFilter(req.query);
-    const questions = await Question.find(filter).lean().exec();
-    return res.status(200).send({ status: 200, data: questions });
-  } catch (error) {
-    return res.status(500).send({ error: error.message });
-  }
-});
-
-/* ─────────────────────────────────────────────
-   GET /questions/subjects
-   Returns a structured tree of all subjects → sections → topics
-   so the frontend can build menus without hardcoding anything.
-
-   Response shape:
-   {
-     "math": {
-       "Quantitative Aptitude": ["Profit & Loss", "Time & Work", ...]
-     },
-     "english": { ... },
-     ...
-   }
-───────────────────────────────────────────── */
-router.get("/subjects", async (req, res) => {
-  try {
-    const pipeline = [
+    const raw = await Question.aggregate([
       {
         $group: {
-          _id: {
-            subject: "$subject",
-            section: "$section",
-            topic: "$topic",
-          },
+          _id: { subject: "$subject", section: "$section", topic: "$topic" },
         },
       },
       { $sort: { "_id.subject": 1, "_id.section": 1, "_id.topic": 1 } },
-    ];
+    ]);
 
-    const raw = await Question.aggregate(pipeline).exec();
-
-    // Build nested object: { subject: { section: [topics] } }
     const tree = {};
-    for (const row of raw) {
-      const { subject, section, topic } = row._id;
+    for (const {
+      _id: { subject, section, topic },
+    } of raw) {
       if (!tree[subject]) tree[subject] = {};
       if (!tree[subject][section]) tree[subject][section] = [];
       tree[subject][section].push(topic);
     }
 
-    return res.status(200).send({ status: 200, data: tree });
-  } catch (error) {
-    return res.status(500).send({ error: error.message });
+    return res.json({ status: 200, data: tree });
+  } catch (err) {
+    next(err);
   }
 });
 
-/* ─────────────────────────────────────────────
-   GET /questions/:id
-   Returns a single question document by its _id.
-───────────────────────────────────────────── */
-router.get("/:id", async (req, res) => {
+/* ── GET /questions ──────────────────────────────────────────────────────── */
+router.get("/", async (req, res, next) => {
   try {
-    const question = await Question.findById(req.params.id).lean().exec();
-    if (!question) return res.status(404).send({ message: "Not found" });
-    return res.status(200).send({ status: 200, data: question });
-  } catch (error) {
-    return res.status(500).send({ error: error.message });
+    const questions = await Question.find(buildFilter(req.query)).lean();
+    return res.json({ status: 200, data: questions });
+  } catch (err) {
+    next(err);
   }
 });
 
-/* ─────────────────────────────────────────────
-   POST /questions/create
-   Create one question document (one subject/section/topic group).
-
-   Body example:
-   {
-     "subject": "math",
-     "section": "Quantitative Aptitude",
-     "topic": "Profit & Loss",
-     "difficultyLevel": "medium",
-     "question": [
-       {
-         "qus": "A sells a bike at 20% profit...",
-         "options": ["Rs 100", "Rs 200", "Rs 300", "Rs 400"],
-         "answer": 1,
-         "explanation": "Explanation here"
-       }
-     ]
-   }
-───────────────────────────────────────────── */
-router.post("/create", async (req, res) => {
+/* ── GET /questions/:id ──────────────────────────────────────────────────── */
+router.get("/:id", async (req, res, next) => {
   try {
-    const question = await Question.create(req.body);
-    return res
-      .status(201)
-      .send({ message: "Questions added successfully", data: question });
-  } catch (error) {
-    return res.status(400).send({ error: error.message });
+    const q = await Question.findById(req.params.id).lean();
+    if (!q) return res.status(404).json({ message: "Not found" });
+    return res.json({ status: 200, data: q });
+  } catch (err) {
+    next(err);
   }
 });
 
-/* ─────────────────────────────────────────────
-   POST /questions/create-many
-   Bulk insert multiple question documents at once.
-
-   Body: Array of question documents (same shape as /create body).
-───────────────────────────────────────────── */
-router.post("/create-many", async (req, res) => {
+/* ── POST /questions/create  (admin only) ────────────────────────────────── */
+router.post("/create", requireAuth, requireAdmin, async (req, res, next) => {
   try {
-    if (!Array.isArray(req.body)) {
-      return res.status(400).send({ error: "Body must be an array" });
+    const q = await Question.create(req.body);
+    return res.status(201).json({ message: "Questions added", data: q });
+  } catch (err) {
+    next(err);
+  }
+});
+
+/* ── POST /questions/create-many  (admin only) ───────────────────────────── */
+router.post(
+  "/create-many",
+  requireAuth,
+  requireAdmin,
+  async (req, res, next) => {
+    try {
+      if (!Array.isArray(req.body))
+        return res.status(400).json({ message: "Body must be array" });
+      const docs = await Question.insertMany(req.body, { ordered: false });
+      return res
+        .status(201)
+        .json({ message: `${docs.length} documents inserted`, data: docs });
+    } catch (err) {
+      next(err);
     }
-    const questions = await Question.insertMany(req.body, { ordered: false });
-    return res
-      .status(201)
-      .send({
-        message: `${questions.length} documents inserted`,
-        data: questions,
-      });
-  } catch (error) {
-    return res.status(400).send({ error: error.message });
-  }
-});
+  },
+);
 
-/* ─────────────────────────────────────────────
-   PATCH /questions/:id
-   Update a question document (any field).
-
-   Body: partial question document fields to update.
-   Pass { "question": [...] } to replace the questions array,
-   or any other top-level fields (subject, section, topic, etc.)
-───────────────────────────────────────────── */
-router.patch("/:id", async (req, res) => {
+/* ── PATCH /questions/:id  (admin only) ──────────────────────────────────── */
+router.patch("/:id", requireAuth, requireAdmin, async (req, res, next) => {
   try {
-    const question = await Question.findByIdAndUpdate(req.params.id, req.body, {
+    const q = await Question.findByIdAndUpdate(req.params.id, req.body, {
       new: true,
       runValidators: true,
-    })
-      .lean()
-      .exec();
-    if (!question) return res.status(404).send({ message: "Not found" });
-    return res
-      .status(200)
-      .send({ message: "Question updated successfully", data: question });
-  } catch (error) {
-    return res.status(400).send({ error: error.message });
+    }).lean();
+    if (!q) return res.status(404).json({ message: "Not found" });
+    return res.json({ message: "Updated", data: q });
+  } catch (err) {
+    next(err);
   }
 });
 
-/* ─────────────────────────────────────────────
-   PATCH /questions/:id/add-items
-   Push new question items into the `question` array
-   without replacing the whole document.
+/* ── PATCH /questions/:id/add-items  (admin only) ────────────────────────── */
+router.patch(
+  "/:id/add-items",
+  requireAuth,
+  requireAdmin,
+  async (req, res, next) => {
+    try {
+      const { items } = req.body;
+      if (!Array.isArray(items))
+        return res.status(400).json({ message: "'items' must be array" });
 
-   Body: { "items": [ { qus, options, answer, ... } ] }
-───────────────────────────────────────────── */
-router.patch("/:id/add-items", async (req, res) => {
-  try {
-    const { items } = req.body;
-    if (!Array.isArray(items)) {
-      return res.status(400).send({ error: "'items' must be an array" });
+      const q = await Question.findByIdAndUpdate(
+        req.params.id,
+        { $push: { question: { $each: items } } },
+        { new: true },
+      ).lean();
+      if (!q) return res.status(404).json({ message: "Not found" });
+      return res.json({ message: "Items added", data: q });
+    } catch (err) {
+      next(err);
     }
-    const question = await Question.findByIdAndUpdate(
-      req.params.id,
-      { $push: { question: { $each: items } } },
-      { new: true },
-    )
-      .lean()
-      .exec();
-    if (!question) return res.status(404).send({ message: "Not found" });
-    return res
-      .status(200)
-      .send({ message: "Items added successfully", data: question });
-  } catch (error) {
-    return res.status(400).send({ error: error.message });
+  },
+);
+
+/* ── DELETE /questions/:id  (admin only) ─────────────────────────────────── */
+router.delete("/:id", requireAuth, requireAdmin, async (req, res, next) => {
+  try {
+    const d = await Question.findByIdAndDelete(req.params.id);
+    if (!d) return res.status(404).json({ message: "Not found" });
+    return res.json({ message: "Deleted" });
+  } catch (err) {
+    next(err);
   }
 });
 
-/* ─────────────────────────────────────────────
-   DELETE /questions/:id
-   Delete an entire question document.
-───────────────────────────────────────────── */
-router.delete("/:id", async (req, res) => {
-  try {
-    const deleted = await Question.findByIdAndDelete(req.params.id).exec();
-    if (!deleted) return res.status(404).send({ message: "Not found" });
-    return res.status(200).send({ message: "Question deleted successfully" });
-  } catch (error) {
-    return res.status(500).send({ error: error.message });
-  }
-});
-
-/* ─────────────────────────────────────────────
-   DELETE /questions/:id/items/:itemId
-   Delete a single question item from the `question` array.
-───────────────────────────────────────────── */
-router.delete("/:id/items/:itemId", async (req, res) => {
-  try {
-    const question = await Question.findByIdAndUpdate(
-      req.params.id,
-      { $pull: { question: { _id: req.params.itemId } } },
-      { new: true },
-    )
-      .lean()
-      .exec();
-    if (!question) return res.status(404).send({ message: "Not found" });
-    return res
-      .status(200)
-      .send({ message: "Question item deleted successfully", data: question });
-  } catch (error) {
-    return res.status(500).send({ error: error.message });
-  }
-});
+/* ── DELETE /questions/:id/items/:itemId  (admin only) ───────────────────── */
+router.delete(
+  "/:id/items/:itemId",
+  requireAuth,
+  requireAdmin,
+  async (req, res, next) => {
+    try {
+      const q = await Question.findByIdAndUpdate(
+        req.params.id,
+        { $pull: { question: { _id: req.params.itemId } } },
+        { new: true },
+      ).lean();
+      if (!q) return res.status(404).json({ message: "Not found" });
+      return res.json({ message: "Item deleted", data: q });
+    } catch (err) {
+      next(err);
+    }
+  },
+);
 
 module.exports = router;
