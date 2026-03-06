@@ -9,7 +9,7 @@ const ALLOWED_ORIGINS = (process.env.ALLOWED_ORIGINS || "")
   .split(",")
   .map((o) => o.trim())
   .filter(Boolean)
-  .concat(["http://localhost:3000", "http://localhost:5173"]);
+  .concat(["http://localhost:3000","https://revisionkarlo.com", "http://localhost:5173"]);
 
 app.use(
   cors({
