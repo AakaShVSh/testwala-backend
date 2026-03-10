@@ -9,7 +9,11 @@
 //   .split(",")
 //   .map((o) => o.trim())
 //   .filter(Boolean)
-//   .concat(["http://localhost:3000","https://revisionkarlo.in", "http://localhost:5173"]);
+//   .concat([
+//     "http://localhost:3000",
+//     "https://revisionkarlo.in",
+//     "http://localhost:5173",
+//   ]);
 
 // app.use(
 //   cors({
@@ -33,6 +37,9 @@
 
 // /* ── Routes ─────────────────────────────────────────────────────────────── */
 // app.use("/auth", require("./controllers/auth.controller"));
+// // ⚠️  /admin MUST be registered before /coaching so that
+// //     GET /coaching/admin/... is never swallowed by /:slug
+// app.use("/admin", require("./controllers/admin.controller"));
 // app.use("/coaching", require("./controllers/coaching.controller"));
 // app.use("/tests", require("./controllers/test.controller"));
 // app.use("/results", require("./controllers/result.controller"));
@@ -97,6 +104,8 @@ app.use("/coaching", require("./controllers/coaching.controller"));
 app.use("/tests", require("./controllers/test.controller"));
 app.use("/results", require("./controllers/result.controller"));
 app.use("/questions", require("./controllers/question.controller"));
+app.use("/test-requests", require("./controllers/testRequest.controller"));
+app.use("/notifications", require("./controllers/notification.controller"));
 
 /* ── 404 catch-all ──────────────────────────────────────────────────────── */
 app.use((_req, res) => res.status(404).json({ message: "Route not found" }));
