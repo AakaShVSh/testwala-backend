@@ -1,381 +1,3 @@
-const express = require("express");
-const Coaching = require("../models/coaching.model");
-const User = require("../models/User.model");
-const Test = require("../models/test.model");
-const Result = require("../models/result.model");
-const { requireAuth } = require("../middlewares/auth.middleware");
-const { toSlug } = require("../utils/slug");
-
-const router = express.Router();
-
-/* ── helper: attach live attempt counts from Results collection ─────────────
-   Takes an array of test docs, returns same array with totalAttempts
-   computed from the Results collection (never stale).
-──────────────────────────────────────────────────────────────────────────── */
-async function withLiveAttempts(tests) {
-  if (!tests.length) return tests;
-  const testIds = tests.map((t) => t._id);
-  const counts = await Result.aggregate([
-    { $match: { testId: { $in: testIds } } },
-    { $group: { _id: "$testId", count: { $sum: 1 } } },
-  ]);
-  const countMap = {};
-  counts.forEach((c) => {
-    countMap[c._id.toString()] = c.count;
-  });
-  return tests.map((t) => ({
-    ...t,
-    totalAttempts: countMap[t._id.toString()] ?? 0,
-  }));
-}
-
-/* ── POST /coaching/create ───────────────────────────────────────────────────
-   Only authenticated users can create a coaching.
-   After creation the user's coachingId is updated to link them.
-──────────────────────────────────────────────────────────────────────────── */
-router.post("/create", requireAuth, async (req, res, next) => {
-  try {
-    const { name } = req.body;
-    if (!name) return res.status(400).json({ message: "name is required" });
-
-    if (req.user.coachingId) {
-      return res
-        .status(409)
-        .json({ message: "You already have a coaching centre" });
-    }
-
-    req.body.slug = req.body.slug || `${toSlug(name)}-${Date.now()}`;
-    req.body.owner = req.user._id;
-
-    const coaching = await Coaching.create(req.body);
-    await User.findByIdAndUpdate(req.user._id, { coachingId: coaching._id });
-
-    return res
-      .status(201)
-      .json({ message: "Coaching created", data: coaching });
-  } catch (err) {
-    if (err.code === 11000)
-      return res.status(409).json({ message: "Slug already taken" });
-    next(err);
-  }
-});
-
-/* ── GET /coaching ───────────────────────────────────────────────────────────
-   Public list — used by students to browse coachings.
-──────────────────────────────────────────────────────────────────────────── */
-router.get("/", async (req, res, next) => {
-  try {
-    const filter = { isActive: true };
-    if (req.query.examType) filter.examTypes = req.query.examType;
-    if (req.query.city) filter.city = new RegExp(req.query.city, "i");
-
-    const list = await Coaching.find(filter)
-      .select("-__v")
-      .populate("owner", "Name Email")
-      .lean();
-
-    return res.json({ status: 200, data: list });
-  } catch (err) {
-    next(err);
-  }
-});
-
-/* ── GET /coaching/mine ──────────────────────────────────────────────────────
-   Returns the coach's own coaching + dashboard stats.
-   totalAttempts per test is computed LIVE from Results collection.
-──────────────────────────────────────────────────────────────────────────── */
-router.get("/mine", requireAuth, async (req, res, next) => {
-  try {
-    if (!req.user.coachingId) {
-      return res
-        .status(404)
-        .json({ message: "You do not have a coaching centre" });
-    }
-
-    const coaching = await Coaching.findById(req.user.coachingId).lean();
-    if (!coaching)
-      return res.status(404).json({ message: "Coaching not found" });
-
-    // Unique students across all tests of this coaching
-    const uniqueStudents = await Result.distinct("studentId", {
-      coachingId: coaching._id,
-    });
-
-    // All active tests
-    const rawTests = await Test.find({
-      coachingId: coaching._id,
-      isActive: true,
-    })
-      .select(
-        "title slug examType subject timeLimitMin totalMarks visibility accessToken createdAt",
-      )
-      .lean();
-
-    // ── Live attempt counts from Results (source of truth, never stale) ──
-    const tests = await withLiveAttempts(rawTests);
-
-    return res.json({
-      status: 200,
-      data: {
-        ...coaching,
-        totalStudents: uniqueStudents.length,
-        tests,
-      },
-    });
-  } catch (err) {
-    next(err);
-  }
-});
-
-/* ── GET /coaching/students ──────────────────────────────────────────────────
-   Coach sees all students under their coaching with summary stats.
-──────────────────────────────────────────────────────────────────────────── */
-router.get("/students", requireAuth, async (req, res, next) => {
-  try {
-    if (!req.user.coachingId) {
-      return res.status(403).json({ message: "Not a coaching owner" });
-    }
-
-    const coachingId = req.user.coachingId;
-
-    const results = await Result.find({ coachingId })
-      .populate("studentId", "Name Email Phone")
-      .populate("testId", "title totalMarks examType")
-      .select(
-        "studentId testId score totalQuestions percentage percentile timeTaken createdAt",
-      )
-      .sort({ createdAt: -1 })
-      .lean();
-
-    const studentMap = {};
-    results.forEach((r) => {
-      if (!r.studentId) return;
-      const sid = r.studentId._id.toString();
-      if (!studentMap[sid]) {
-        studentMap[sid] = {
-          _id: r.studentId._id,
-          Name: r.studentId.Name,
-          Email: r.studentId.Email,
-          Phone: r.studentId.Phone,
-          totalTests: 0,
-          totalScore: 0,
-          totalMarks: 0,
-          percentages: [],
-          percentiles: [],
-          lastAttempt: null,
-        };
-      }
-      const s = studentMap[sid];
-      s.totalTests += 1;
-      s.totalScore += r.score || 0;
-      s.totalMarks += r.testId?.totalMarks || r.totalQuestions || 0;
-      s.percentages.push(r.percentage || 0);
-      s.percentiles.push(r.percentile || 0);
-      if (!s.lastAttempt || new Date(r.createdAt) > new Date(s.lastAttempt)) {
-        s.lastAttempt = r.createdAt;
-      }
-    });
-
-    const students = Object.values(studentMap).map((s) => ({
-      _id: s._id,
-      Name: s.Name,
-      Email: s.Email,
-      Phone: s.Phone,
-      totalTests: s.totalTests,
-      totalScore: s.totalScore,
-      totalMarks: s.totalMarks,
-      avgPercentage: s.percentages.length
-        ? Math.round(
-            s.percentages.reduce((a, b) => a + b, 0) / s.percentages.length,
-          )
-        : 0,
-      avgPercentile: s.percentiles.length
-        ? Math.round(
-            s.percentiles.reduce((a, b) => a + b, 0) / s.percentiles.length,
-          )
-        : 0,
-      lastAttempt: s.lastAttempt,
-    }));
-
-    return res.json({ status: 200, data: students });
-  } catch (err) {
-    next(err);
-  }
-});
-
-/* ── GET /coaching/students/:studentId ───────────────────────────────────────
-   Full analytics of one student under the coach's coaching.
-──────────────────────────────────────────────────────────────────────────── */
-router.get("/students/:studentId", requireAuth, async (req, res, next) => {
-  try {
-    if (!req.user.coachingId) {
-      return res.status(403).json({ message: "Not a coaching owner" });
-    }
-
-    const coachingId = req.user.coachingId;
-    const { studentId } = req.params;
-
-    const student = await User.findById(studentId)
-      .select("Name Email Phone createdAt")
-      .lean();
-    if (!student) return res.status(404).json({ message: "Student not found" });
-
-    const results = await Result.find({ coachingId, studentId })
-      .populate("testId", "title examType totalMarks timeLimitMin slug")
-      .select(
-        "testId score totalQuestions wrongAnswers skipped percentage percentile timeTaken isPassed createdAt",
-      )
-      .sort({ createdAt: -1 })
-      .lean();
-
-    const totalTests = results.length;
-    const totalScore = results.reduce((a, r) => a + (r.score || 0), 0);
-    const totalMarks = results.reduce(
-      (a, r) => a + (r.testId?.totalMarks || r.totalQuestions || 0),
-      0,
-    );
-    const avgPercentage = totalTests
-      ? Math.round(
-          results.reduce((a, r) => a + (r.percentage || 0), 0) / totalTests,
-        )
-      : 0;
-    const avgPercentile = totalTests
-      ? Math.round(
-          results.reduce((a, r) => a + (r.percentile || 0), 0) / totalTests,
-        )
-      : 0;
-    const totalTimeTaken = results.reduce((a, r) => a + (r.timeTaken || 0), 0);
-    const passedTests = results.filter((r) => r.isPassed).length;
-    const highestScore = results.length
-      ? Math.max(...results.map((r) => r.percentage || 0))
-      : 0;
-
-    return res.json({
-      status: 200,
-      data: {
-        student,
-        summary: {
-          totalTests,
-          totalScore,
-          totalMarks,
-          avgPercentage,
-          avgPercentile,
-          totalTimeTaken,
-          passedTests,
-          highestScore,
-        },
-        attempts: results.map((r) => ({
-          _id: r._id,
-          test: r.testId,
-          score: r.score,
-          totalQuestions: r.totalQuestions,
-          wrongAnswers: r.wrongAnswers,
-          skipped: r.skipped,
-          percentage: r.percentage,
-          percentile: r.percentile,
-          timeTaken: r.timeTaken,
-          isPassed: r.isPassed,
-          date: r.createdAt,
-        })),
-      },
-    });
-  } catch (err) {
-    next(err);
-  }
-});
-
-/* ── GET /coaching/:slug ─────────────────────────────────────────────────────
-   Public coaching page — students see this.
-   totalAttempts computed live from Results collection.
-──────────────────────────────────────────────────────────────────────────── */
-router.get("/:slug", async (req, res, next) => {
-  try {
-    const coaching = await Coaching.findOne({
-      slug: req.params.slug,
-      isActive: true,
-    })
-      .populate("owner", "Name")
-      .lean();
-    if (!coaching)
-      return res.status(404).json({ message: "Coaching not found" });
-
-    const rawTests = await Test.find({
-      coachingId: coaching._id,
-      isActive: true,
-      visibility: "public",
-    })
-      .select("title slug examType subject timeLimitMin totalMarks createdAt")
-      .lean();
-
-    // ── Live attempt counts ──
-    const tests = await withLiveAttempts(rawTests);
-
-    return res.json({ status: 200, data: { ...coaching, tests } });
-  } catch (err) {
-    next(err);
-  }
-});
-
-/* ── PATCH /coaching/:id ─────────────────────────────────────────────────────
-   Owner-only update.
-──────────────────────────────────────────────────────────────────────────── */
-router.patch("/:id", requireAuth, async (req, res, next) => {
-  try {
-    const coaching = await Coaching.findById(req.params.id).lean();
-    if (!coaching) return res.status(404).json({ message: "Not found" });
-
-    if (
-      coaching.owner.toString() !== req.user._id.toString() &&
-      !req.user.isAdmin
-    ) {
-      return res.status(403).json({ message: "Not authorised" });
-    }
-
-    if (req.body.name && !req.body.slug) {
-      req.body.slug = toSlug(req.body.name);
-    }
-
-    const updated = await Coaching.findByIdAndUpdate(req.params.id, req.body, {
-      new: true,
-    }).lean();
-    return res.json({ message: "Coaching updated", data: updated });
-  } catch (err) {
-    next(err);
-  }
-});
-
-/* ── DELETE /coaching/:id  (soft delete) ─────────────────────────────────── */
-router.delete("/:id", requireAuth, async (req, res, next) => {
-  try {
-    const coaching = await Coaching.findById(req.params.id).lean();
-    if (!coaching) return res.status(404).json({ message: "Not found" });
-
-    if (
-      coaching.owner.toString() !== req.user._id.toString() &&
-      !req.user.isAdmin
-    ) {
-      return res.status(403).json({ message: "Not authorised" });
-    }
-
-    await Coaching.findByIdAndUpdate(req.params.id, { isActive: false });
-    return res.json({ message: "Coaching deactivated" });
-  } catch (err) {
-    next(err);
-  }
-});
-
-module.exports = router;
-
-
-
-
-
-
-
-
-
-
-
 // const express = require("express");
 // const Coaching = require("../models/coaching.model");
 // const User = require("../models/User.model");
@@ -386,14 +8,10 @@ module.exports = router;
 
 // const router = express.Router();
 
-// /* ── helper: admin check ─────────────────────────────────────────────────── */
-// function requireAdmin(req, res, next) {
-//   if (!req.user?.isAdmin)
-//     return res.status(403).json({ message: "Admin only" });
-//   next();
-// }
-
-// /* ── helper: live attempt counts ─────────────────────────────────────────── */
+// /* ── helper: attach live attempt counts from Results collection ─────────────
+//    Takes an array of test docs, returns same array with totalAttempts
+//    computed from the Results collection (never stale).
+// ──────────────────────────────────────────────────────────────────────────── */
 // async function withLiveAttempts(tests) {
 //   if (!tests.length) return tests;
 //   const testIds = tests.map((t) => t._id);
@@ -411,46 +29,30 @@ module.exports = router;
 //   }));
 // }
 
-// /* ═══════════════════════════════════════════════════════════════════════════
-//    POST /coaching/create
-//    Any authenticated user submits a registration request.
-//    Status starts as "pending" — isActive stays false until admin approves.
-// ═══════════════════════════════════════════════════════════════════════════ */
+// /* ── POST /coaching/create ───────────────────────────────────────────────────
+//    Only authenticated users can create a coaching.
+//    After creation the user's coachingId is updated to link them.
+// ──────────────────────────────────────────────────────────────────────────── */
 // router.post("/create", requireAuth, async (req, res, next) => {
 //   try {
 //     const { name } = req.body;
 //     if (!name) return res.status(400).json({ message: "name is required" });
 
-//     // Check if user already has a coaching (any status)
-//     const existing = await Coaching.findOne({ owner: req.user._id });
-//     if (existing) {
-//       return res.status(409).json({
-//         message:
-//           existing.status === "pending"
-//             ? "You already have a pending registration request"
-//             : existing.status === "approved"
-//               ? "You already have an approved coaching centre"
-//               : "Your previous request was rejected. Contact admin.",
-//         status: existing.status,
-//       });
+//     if (req.user.coachingId) {
+//       return res
+//         .status(409)
+//         .json({ message: "You already have a coaching centre" });
 //     }
 
-//     const baseSlug = toSlug(name);
-//     req.body.slug = `${baseSlug}-${Date.now()}`;
+//     req.body.slug = req.body.slug || `${toSlug(name)}-${Date.now()}`;
 //     req.body.owner = req.user._id;
-//     req.body.status = "pending";
-//     req.body.isActive = false; // NOT active until admin approves
 
 //     const coaching = await Coaching.create(req.body);
-
-//     // Link coachingId to user so they can track their request
 //     await User.findByIdAndUpdate(req.user._id, { coachingId: coaching._id });
 
-//     return res.status(201).json({
-//       message:
-//         "Registration submitted! We will verify and activate your coaching within 24 hours.",
-//       data: coaching,
-//     });
+//     return res
+//       .status(201)
+//       .json({ message: "Coaching created", data: coaching });
 //   } catch (err) {
 //     if (err.code === 11000)
 //       return res.status(409).json({ message: "Slug already taken" });
@@ -458,117 +60,12 @@ module.exports = router;
 //   }
 // });
 
-// /* ═══════════════════════════════════════════════════════════════════════════
-//    GET /coaching/admin/requests
-//    Admin sees ALL coaching registration requests with filters.
-// ═══════════════════════════════════════════════════════════════════════════ */
-// router.get(
-//   "/admin/requests",
-//   requireAuth,
-//   requireAdmin,
-//   async (req, res, next) => {
-//     try {
-//       const { status, search } = req.query;
-//       const filter = {};
-//       if (status && ["pending", "approved", "rejected"].includes(status)) {
-//         filter.status = status;
-//       }
-//       if (search) {
-//         filter.$or = [
-//           { name: new RegExp(search, "i") },
-//           { city: new RegExp(search, "i") },
-//           { email: new RegExp(search, "i") },
-//         ];
-//       }
-
-//       const requests = await Coaching.find(filter)
-//         .populate("owner", "Name Email Phone createdAt")
-//         .populate("reviewedBy", "Name Email")
-//         .sort({ createdAt: -1 })
-//         .lean();
-
-//       return res.json({ status: 200, data: requests });
-//     } catch (err) {
-//       next(err);
-//     }
-//   },
-// );
-
-// /* ═══════════════════════════════════════════════════════════════════════════
-//    PATCH /coaching/admin/:id/approve
-//    Admin approves a coaching — sets status=approved, isActive=true.
-// ═══════════════════════════════════════════════════════════════════════════ */
-// router.patch(
-//   "/admin/:id/approve",
-//   requireAuth,
-//   requireAdmin,
-//   async (req, res, next) => {
-//     try {
-//       const coaching = await Coaching.findById(req.params.id);
-//       if (!coaching)
-//         return res.status(404).json({ message: "Coaching not found" });
-
-//       coaching.status = "approved";
-//       coaching.isActive = true;
-//       coaching.adminNote = req.body.adminNote || "";
-//       coaching.reviewedBy = req.user._id;
-//       coaching.reviewedAt = new Date();
-//       await coaching.save();
-
-//       return res.json({
-//         message: `"${coaching.name}" approved and is now live.`,
-//         data: coaching,
-//       });
-//     } catch (err) {
-//       next(err);
-//     }
-//   },
-// );
-
-// /* ═══════════════════════════════════════════════════════════════════════════
-//    PATCH /coaching/admin/:id/reject
-//    Admin rejects with an optional reason.
-// ═══════════════════════════════════════════════════════════════════════════ */
-// router.patch(
-//   "/admin/:id/reject",
-//   requireAuth,
-//   requireAdmin,
-//   async (req, res, next) => {
-//     try {
-//       const coaching = await Coaching.findById(req.params.id);
-//       if (!coaching)
-//         return res.status(404).json({ message: "Coaching not found" });
-
-//       coaching.status = "rejected";
-//       coaching.isActive = false;
-//       coaching.adminNote =
-//         req.body.adminNote || "Does not meet verification criteria.";
-//       coaching.reviewedBy = req.user._id;
-//       coaching.reviewedAt = new Date();
-//       await coaching.save();
-
-//       // Remove coachingId from user so they can reapply
-//       await User.findByIdAndUpdate(coaching.owner, {
-//         $unset: { coachingId: "" },
-//       });
-
-//       return res.json({
-//         message: `"${coaching.name}" rejected.`,
-//         data: coaching,
-//       });
-//     } catch (err) {
-//       next(err);
-//     }
-//   },
-// );
-
-// /* ═══════════════════════════════════════════════════════════════════════════
-//    GET /coaching
-//    Public list — only APPROVED coachings.
-// ═══════════════════════════════════════════════════════════════════════════ */
+// /* ── GET /coaching ───────────────────────────────────────────────────────────
+//    Public list — used by students to browse coachings.
+// ──────────────────────────────────────────────────────────────────────────── */
 // router.get("/", async (req, res, next) => {
 //   try {
-//     const filter = { isActive: true, status: "approved" };
+//     const filter = { isActive: true };
 //     if (req.query.examType) filter.examTypes = req.query.examType;
 //     if (req.query.city) filter.city = new RegExp(req.query.city, "i");
 
@@ -583,11 +80,10 @@ module.exports = router;
 //   }
 // });
 
-// /* ═══════════════════════════════════════════════════════════════════════════
-//    GET /coaching/mine
-//    Returns coach's own coaching + dashboard stats.
-//    Works for any status so they can see pending/rejected too.
-// ═══════════════════════════════════════════════════════════════════════════ */
+// /* ── GET /coaching/mine ──────────────────────────────────────────────────────
+//    Returns the coach's own coaching + dashboard stats.
+//    totalAttempts per test is computed LIVE from Results collection.
+// ──────────────────────────────────────────────────────────────────────────── */
 // router.get("/mine", requireAuth, async (req, res, next) => {
 //   try {
 //     if (!req.user.coachingId) {
@@ -600,15 +96,12 @@ module.exports = router;
 //     if (!coaching)
 //       return res.status(404).json({ message: "Coaching not found" });
 
-//     // If not approved yet, return just the coaching with status (no tests)
-//     if (coaching.status !== "approved") {
-//       return res.json({ status: 200, data: coaching });
-//     }
-
+//     // Unique students across all tests of this coaching
 //     const uniqueStudents = await Result.distinct("studentId", {
 //       coachingId: coaching._id,
 //     });
 
+//     // All active tests
 //     const rawTests = await Test.find({
 //       coachingId: coaching._id,
 //       isActive: true,
@@ -618,6 +111,7 @@ module.exports = router;
 //       )
 //       .lean();
 
+//     // ── Live attempt counts from Results (source of truth, never stale) ──
 //     const tests = await withLiveAttempts(rawTests);
 
 //     return res.json({
@@ -633,9 +127,9 @@ module.exports = router;
 //   }
 // });
 
-// /* ═══════════════════════════════════════════════════════════════════════════
-//    GET /coaching/students  — coach sees their students
-// ═══════════════════════════════════════════════════════════════════════════ */
+// /* ── GET /coaching/students ──────────────────────────────────────────────────
+//    Coach sees all students under their coaching with summary stats.
+// ──────────────────────────────────────────────────────────────────────────── */
 // router.get("/students", requireAuth, async (req, res, next) => {
 //   try {
 //     if (!req.user.coachingId) {
@@ -643,6 +137,7 @@ module.exports = router;
 //     }
 
 //     const coachingId = req.user.coachingId;
+
 //     const results = await Result.find({ coachingId })
 //       .populate("studentId", "Name Email Phone")
 //       .populate("testId", "title totalMarks examType")
@@ -687,9 +182,16 @@ module.exports = router;
 //       Email: s.Email,
 //       Phone: s.Phone,
 //       totalTests: s.totalTests,
+//       totalScore: s.totalScore,
+//       totalMarks: s.totalMarks,
 //       avgPercentage: s.percentages.length
 //         ? Math.round(
 //             s.percentages.reduce((a, b) => a + b, 0) / s.percentages.length,
+//           )
+//         : 0,
+//       avgPercentile: s.percentiles.length
+//         ? Math.round(
+//             s.percentiles.reduce((a, b) => a + b, 0) / s.percentiles.length,
 //           )
 //         : 0,
 //       lastAttempt: s.lastAttempt,
@@ -701,15 +203,96 @@ module.exports = router;
 //   }
 // });
 
-// /* ═══════════════════════════════════════════════════════════════════════════
-//    GET /coaching/:slug  — public coaching page (approved only)
-// ═══════════════════════════════════════════════════════════════════════════ */
+// /* ── GET /coaching/students/:studentId ───────────────────────────────────────
+//    Full analytics of one student under the coach's coaching.
+// ──────────────────────────────────────────────────────────────────────────── */
+// router.get("/students/:studentId", requireAuth, async (req, res, next) => {
+//   try {
+//     if (!req.user.coachingId) {
+//       return res.status(403).json({ message: "Not a coaching owner" });
+//     }
+
+//     const coachingId = req.user.coachingId;
+//     const { studentId } = req.params;
+
+//     const student = await User.findById(studentId)
+//       .select("Name Email Phone createdAt")
+//       .lean();
+//     if (!student) return res.status(404).json({ message: "Student not found" });
+
+//     const results = await Result.find({ coachingId, studentId })
+//       .populate("testId", "title examType totalMarks timeLimitMin slug")
+//       .select(
+//         "testId score totalQuestions wrongAnswers skipped percentage percentile timeTaken isPassed createdAt",
+//       )
+//       .sort({ createdAt: -1 })
+//       .lean();
+
+//     const totalTests = results.length;
+//     const totalScore = results.reduce((a, r) => a + (r.score || 0), 0);
+//     const totalMarks = results.reduce(
+//       (a, r) => a + (r.testId?.totalMarks || r.totalQuestions || 0),
+//       0,
+//     );
+//     const avgPercentage = totalTests
+//       ? Math.round(
+//           results.reduce((a, r) => a + (r.percentage || 0), 0) / totalTests,
+//         )
+//       : 0;
+//     const avgPercentile = totalTests
+//       ? Math.round(
+//           results.reduce((a, r) => a + (r.percentile || 0), 0) / totalTests,
+//         )
+//       : 0;
+//     const totalTimeTaken = results.reduce((a, r) => a + (r.timeTaken || 0), 0);
+//     const passedTests = results.filter((r) => r.isPassed).length;
+//     const highestScore = results.length
+//       ? Math.max(...results.map((r) => r.percentage || 0))
+//       : 0;
+
+//     return res.json({
+//       status: 200,
+//       data: {
+//         student,
+//         summary: {
+//           totalTests,
+//           totalScore,
+//           totalMarks,
+//           avgPercentage,
+//           avgPercentile,
+//           totalTimeTaken,
+//           passedTests,
+//           highestScore,
+//         },
+//         attempts: results.map((r) => ({
+//           _id: r._id,
+//           test: r.testId,
+//           score: r.score,
+//           totalQuestions: r.totalQuestions,
+//           wrongAnswers: r.wrongAnswers,
+//           skipped: r.skipped,
+//           percentage: r.percentage,
+//           percentile: r.percentile,
+//           timeTaken: r.timeTaken,
+//           isPassed: r.isPassed,
+//           date: r.createdAt,
+//         })),
+//       },
+//     });
+//   } catch (err) {
+//     next(err);
+//   }
+// });
+
+// /* ── GET /coaching/:slug ─────────────────────────────────────────────────────
+//    Public coaching page — students see this.
+//    totalAttempts computed live from Results collection.
+// ──────────────────────────────────────────────────────────────────────────── */
 // router.get("/:slug", async (req, res, next) => {
 //   try {
 //     const coaching = await Coaching.findOne({
 //       slug: req.params.slug,
 //       isActive: true,
-//       status: "approved",
 //     })
 //       .populate("owner", "Name")
 //       .lean();
@@ -724,6 +307,7 @@ module.exports = router;
 //       .select("title slug examType subject timeLimitMin totalMarks createdAt")
 //       .lean();
 
+//     // ── Live attempt counts ──
 //     const tests = await withLiveAttempts(rawTests);
 
 //     return res.json({ status: 200, data: { ...coaching, tests } });
@@ -732,7 +316,9 @@ module.exports = router;
 //   }
 // });
 
-// /* ── PATCH /coaching/:id  (owner update) ─────────────────────────────────── */
+// /* ── PATCH /coaching/:id ─────────────────────────────────────────────────────
+//    Owner-only update.
+// ──────────────────────────────────────────────────────────────────────────── */
 // router.patch("/:id", requireAuth, async (req, res, next) => {
 //   try {
 //     const coaching = await Coaching.findById(req.params.id).lean();
@@ -779,3 +365,407 @@ module.exports = router;
 // });
 
 // module.exports = router;
+
+const express = require("express");
+const Coaching = require("../models/coaching.model");
+const User = require("../models/User.model");
+const Test = require("../models/test.model");
+const Result = require("../models/result.model");
+const { requireAuth } = require("../middlewares/auth.middleware");
+const { toSlug } = require("../utils/slug");
+
+const router = express.Router();
+
+/* ── helper: admin check ─────────────────────────────────────────────────── */
+function requireAdmin(req, res, next) {
+  if (!req.user?.isAdmin)
+    return res.status(403).json({ message: "Admin only" });
+  next();
+}
+
+/* ── helper: live attempt counts ─────────────────────────────────────────── */
+async function withLiveAttempts(tests) {
+  if (!tests.length) return tests;
+  const testIds = tests.map((t) => t._id);
+  const counts = await Result.aggregate([
+    { $match: { testId: { $in: testIds } } },
+    { $group: { _id: "$testId", count: { $sum: 1 } } },
+  ]);
+  const countMap = {};
+  counts.forEach((c) => {
+    countMap[c._id.toString()] = c.count;
+  });
+  return tests.map((t) => ({
+    ...t,
+    totalAttempts: countMap[t._id.toString()] ?? 0,
+  }));
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   POST /coaching/create
+   Any authenticated user submits a registration request.
+   Status starts as "pending" — isActive stays false until admin approves.
+═══════════════════════════════════════════════════════════════════════════ */
+router.post("/create", requireAuth, async (req, res, next) => {
+  try {
+    const { name } = req.body;
+    if (!name) return res.status(400).json({ message: "name is required" });
+
+    // Check if user already has a coaching (any status)
+    const existing = await Coaching.findOne({ owner: req.user._id });
+    if (existing) {
+      return res.status(409).json({
+        message:
+          existing.status === "pending"
+            ? "You already have a pending registration request"
+            : existing.status === "approved"
+              ? "You already have an approved coaching centre"
+              : "Your previous request was rejected. Contact admin.",
+        status: existing.status,
+      });
+    }
+
+    const baseSlug = toSlug(name);
+    req.body.slug = `${baseSlug}-${Date.now()}`;
+    req.body.owner = req.user._id;
+    req.body.status = "pending";
+    req.body.isActive = false; // NOT active until admin approves
+
+    const coaching = await Coaching.create(req.body);
+
+    // Link coachingId to user so they can track their request
+    await User.findByIdAndUpdate(req.user._id, { coachingId: coaching._id });
+
+    return res.status(201).json({
+      message:
+        "Registration submitted! We will verify and activate your coaching within 24 hours.",
+      data: coaching,
+    });
+  } catch (err) {
+    if (err.code === 11000)
+      return res.status(409).json({ message: "Slug already taken" });
+    next(err);
+  }
+});
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   GET /coaching/admin/requests
+   Admin sees ALL coaching registration requests with filters.
+═══════════════════════════════════════════════════════════════════════════ */
+router.get(
+  "/admin/requests",
+  requireAuth,
+  requireAdmin,
+  async (req, res, next) => {
+    try {
+      const { status, search } = req.query;
+      const filter = {};
+      if (status && ["pending", "approved", "rejected"].includes(status)) {
+        filter.status = status;
+      }
+      if (search) {
+        filter.$or = [
+          { name: new RegExp(search, "i") },
+          { city: new RegExp(search, "i") },
+          { email: new RegExp(search, "i") },
+        ];
+      }
+
+      const requests = await Coaching.find(filter)
+        .populate("owner", "Name Email Phone createdAt")
+        .populate("reviewedBy", "Name Email")
+        .sort({ createdAt: -1 })
+        .lean();
+
+      return res.json({ status: 200, data: requests });
+    } catch (err) {
+      next(err);
+    }
+  },
+);
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   PATCH /coaching/admin/:id/approve
+   Admin approves a coaching — sets status=approved, isActive=true.
+═══════════════════════════════════════════════════════════════════════════ */
+router.patch(
+  "/admin/:id/approve",
+  requireAuth,
+  requireAdmin,
+  async (req, res, next) => {
+    try {
+      const coaching = await Coaching.findById(req.params.id);
+      if (!coaching)
+        return res.status(404).json({ message: "Coaching not found" });
+
+      coaching.status = "approved";
+      coaching.isActive = true;
+      coaching.adminNote = req.body.adminNote || "";
+      coaching.reviewedBy = req.user._id;
+      coaching.reviewedAt = new Date();
+      await coaching.save();
+
+      return res.json({
+        message: `"${coaching.name}" approved and is now live.`,
+        data: coaching,
+      });
+    } catch (err) {
+      next(err);
+    }
+  },
+);
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   PATCH /coaching/admin/:id/reject
+   Admin rejects with an optional reason.
+═══════════════════════════════════════════════════════════════════════════ */
+router.patch(
+  "/admin/:id/reject",
+  requireAuth,
+  requireAdmin,
+  async (req, res, next) => {
+    try {
+      const coaching = await Coaching.findById(req.params.id);
+      if (!coaching)
+        return res.status(404).json({ message: "Coaching not found" });
+
+      coaching.status = "rejected";
+      coaching.isActive = false;
+      coaching.adminNote =
+        req.body.adminNote || "Does not meet verification criteria.";
+      coaching.reviewedBy = req.user._id;
+      coaching.reviewedAt = new Date();
+      await coaching.save();
+
+      // Remove coachingId from user so they can reapply
+      await User.findByIdAndUpdate(coaching.owner, {
+        $unset: { coachingId: "" },
+      });
+
+      return res.json({
+        message: `"${coaching.name}" rejected.`,
+        data: coaching,
+      });
+    } catch (err) {
+      next(err);
+    }
+  },
+);
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   GET /coaching
+   Public list — only APPROVED coachings.
+═══════════════════════════════════════════════════════════════════════════ */
+router.get("/", async (req, res, next) => {
+  try {
+    const filter = { isActive: true, status: "approved" };
+    if (req.query.examType) filter.examTypes = req.query.examType;
+    if (req.query.city) filter.city = new RegExp(req.query.city, "i");
+
+    const list = await Coaching.find(filter)
+      .select("-__v")
+      .populate("owner", "Name Email")
+      .lean();
+
+    return res.json({ status: 200, data: list });
+  } catch (err) {
+    next(err);
+  }
+});
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   GET /coaching/mine
+   Returns coach's own coaching + dashboard stats.
+   Works for any status so they can see pending/rejected too.
+═══════════════════════════════════════════════════════════════════════════ */
+router.get("/mine", requireAuth, async (req, res, next) => {
+  try {
+    if (!req.user.coachingId) {
+      return res
+        .status(404)
+        .json({ message: "You do not have a coaching centre" });
+    }
+
+    const coaching = await Coaching.findById(req.user.coachingId).lean();
+    if (!coaching)
+      return res.status(404).json({ message: "Coaching not found" });
+
+    // If not approved yet, return just the coaching with status (no tests)
+    if (coaching.status !== "approved") {
+      return res.json({ status: 200, data: coaching });
+    }
+
+    const uniqueStudents = await Result.distinct("studentId", {
+      coachingId: coaching._id,
+    });
+
+    const rawTests = await Test.find({
+      coachingId: coaching._id,
+      isActive: true,
+    })
+      .select(
+        "title slug examType subject timeLimitMin totalMarks visibility accessToken createdAt",
+      )
+      .lean();
+
+    const tests = await withLiveAttempts(rawTests);
+
+    return res.json({
+      status: 200,
+      data: {
+        ...coaching,
+        totalStudents: uniqueStudents.length,
+        tests,
+      },
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   GET /coaching/students  — coach sees their students
+═══════════════════════════════════════════════════════════════════════════ */
+router.get("/students", requireAuth, async (req, res, next) => {
+  try {
+    if (!req.user.coachingId) {
+      return res.status(403).json({ message: "Not a coaching owner" });
+    }
+
+    const coachingId = req.user.coachingId;
+    const results = await Result.find({ coachingId })
+      .populate("studentId", "Name Email Phone")
+      .populate("testId", "title totalMarks examType")
+      .select(
+        "studentId testId score totalQuestions percentage percentile timeTaken createdAt",
+      )
+      .sort({ createdAt: -1 })
+      .lean();
+
+    const studentMap = {};
+    results.forEach((r) => {
+      if (!r.studentId) return;
+      const sid = r.studentId._id.toString();
+      if (!studentMap[sid]) {
+        studentMap[sid] = {
+          _id: r.studentId._id,
+          Name: r.studentId.Name,
+          Email: r.studentId.Email,
+          Phone: r.studentId.Phone,
+          totalTests: 0,
+          totalScore: 0,
+          totalMarks: 0,
+          percentages: [],
+          percentiles: [],
+          lastAttempt: null,
+        };
+      }
+      const s = studentMap[sid];
+      s.totalTests += 1;
+      s.totalScore += r.score || 0;
+      s.totalMarks += r.testId?.totalMarks || r.totalQuestions || 0;
+      s.percentages.push(r.percentage || 0);
+      s.percentiles.push(r.percentile || 0);
+      if (!s.lastAttempt || new Date(r.createdAt) > new Date(s.lastAttempt)) {
+        s.lastAttempt = r.createdAt;
+      }
+    });
+
+    const students = Object.values(studentMap).map((s) => ({
+      _id: s._id,
+      Name: s.Name,
+      Email: s.Email,
+      Phone: s.Phone,
+      totalTests: s.totalTests,
+      avgPercentage: s.percentages.length
+        ? Math.round(
+            s.percentages.reduce((a, b) => a + b, 0) / s.percentages.length,
+          )
+        : 0,
+      lastAttempt: s.lastAttempt,
+    }));
+
+    return res.json({ status: 200, data: students });
+  } catch (err) {
+    next(err);
+  }
+});
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   GET /coaching/:slug  — public coaching page (approved only)
+═══════════════════════════════════════════════════════════════════════════ */
+router.get("/:slug", async (req, res, next) => {
+  try {
+    const coaching = await Coaching.findOne({
+      slug: req.params.slug,
+      isActive: true,
+      status: "approved",
+    })
+      .populate("owner", "Name")
+      .lean();
+    if (!coaching)
+      return res.status(404).json({ message: "Coaching not found" });
+
+    const rawTests = await Test.find({
+      coachingId: coaching._id,
+      isActive: true,
+      visibility: "public",
+    })
+      .select("title slug examType subject timeLimitMin totalMarks createdAt")
+      .lean();
+
+    const tests = await withLiveAttempts(rawTests);
+
+    return res.json({ status: 200, data: { ...coaching, tests } });
+  } catch (err) {
+    next(err);
+  }
+});
+
+/* ── PATCH /coaching/:id  (owner update) ─────────────────────────────────── */
+router.patch("/:id", requireAuth, async (req, res, next) => {
+  try {
+    const coaching = await Coaching.findById(req.params.id).lean();
+    if (!coaching) return res.status(404).json({ message: "Not found" });
+
+    if (
+      coaching.owner.toString() !== req.user._id.toString() &&
+      !req.user.isAdmin
+    ) {
+      return res.status(403).json({ message: "Not authorised" });
+    }
+
+    if (req.body.name && !req.body.slug) {
+      req.body.slug = toSlug(req.body.name);
+    }
+
+    const updated = await Coaching.findByIdAndUpdate(req.params.id, req.body, {
+      new: true,
+    }).lean();
+    return res.json({ message: "Coaching updated", data: updated });
+  } catch (err) {
+    next(err);
+  }
+});
+
+/* ── DELETE /coaching/:id  (soft delete) ─────────────────────────────────── */
+router.delete("/:id", requireAuth, async (req, res, next) => {
+  try {
+    const coaching = await Coaching.findById(req.params.id).lean();
+    if (!coaching) return res.status(404).json({ message: "Not found" });
+
+    if (
+      coaching.owner.toString() !== req.user._id.toString() &&
+      !req.user.isAdmin
+    ) {
+      return res.status(403).json({ message: "Not authorised" });
+    }
+
+    await Coaching.findByIdAndUpdate(req.params.id, { isActive: false });
+    return res.json({ message: "Coaching deactivated" });
+  } catch (err) {
+    next(err);
+  }
+});
+
+module.exports = router;
