@@ -36,6 +36,18 @@ io.on("connection", (socket) => {
     console.log(`[socket] ${socket.id} joined ${room}`);
   });
 
+  // Per-user room for personal notifications e.g. "user:abc123"
+  socket.on("join-user", (room) => {
+    if (!room) return;
+    socket.join(room);
+    console.log(`[socket] ${socket.id} joined user room ${room}`);
+  });
+
+  socket.on("leave-user", (room) => {
+    if (!room) return;
+    socket.leave(room);
+  });
+
   socket.on("leave-coaching", (room) => {
     if (!room) return;
     socket.leave(room);
