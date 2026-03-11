@@ -108,7 +108,7 @@ app.use("/test-requests", require("./controllers/testRequest.controller"));
 app.use("/notifications", require("./controllers/notification.controller"));
 
 /* ── 404 catch-all ──────────────────────────────────────────────────────── */
-app.use((_req, res) => res.status(404).json({ message: "Route not found" }));
+app.use((_req, res) => res.status(404).json({ message: "Route not foun " }));
 
 /* ── Global error handler ───────────────────────────────────────────────── */
 app.use((err, _req, res, _next) => {
