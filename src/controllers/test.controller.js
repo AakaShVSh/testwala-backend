@@ -78,11 +78,33 @@ router.post("/create", requireAuth, async (req, res, next) => {
 /* ── GET /tests ──────────────────────────────────────────────────────────────
    Public list (no questions, no passwords).
 ──────────────────────────────────────────────────────────────────────────── */
+// router.get("/", async (req, res, next) => {
+//   try {
+//     const filter = { isActive: true, visibility: "public" };
+//     if (req.query.coachingId) filter.coachingId = req.query.coachingId;
+//     if (req.query.examType) filter.examType = req.query.examType;
+//     if (req.query.subject) filter.subject = req.query.subject.toLowerCase();
+
+//     const tests = await Test.find(filter).select("-questions -password").lean();
+//     return res.json({ status: 200, data: tests });
+//   } catch (err) {
+//     next(err);
+//   }
+// });
+
+
+// In GET / — add customExamType to filter support
 router.get("/", async (req, res, next) => {
   try {
     const filter = { isActive: true, visibility: "public" };
     if (req.query.coachingId) filter.coachingId = req.query.coachingId;
-    if (req.query.examType) filter.examType = req.query.examType;
+    if (req.query.examType) {
+      // Match either the standard enum field OR the custom free-text field
+      filter.$or = [
+        { examType: req.query.examType },
+        { customExamType: new RegExp(`^${req.query.examType}$`, "i") },
+      ];
+    }
     if (req.query.subject) filter.subject = req.query.subject.toLowerCase();
 
     const tests = await Test.find(filter).select("-questions -password").lean();
