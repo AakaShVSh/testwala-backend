@@ -9,6 +9,9 @@ const router = express.Router();
 /* ── POST /results/submit ────────────────────────────────────────────────────
    Called when student finishes / time runs out.
    Computes percentile + emits socket event to coach's page instantly.
+   NOTE: Socket event is only emitted on the student's FIRST attempt.
+         Retakes save to DB normally but do NOT trigger live updates so
+         the leaderboard always reflects first-attempt scores only.
 ──────────────────────────────────────────────────────────────────────────── */
 router.post("/submit", requireAuth, async (req, res, next) => {
   try {
@@ -24,6 +27,13 @@ router.post("/submit", requireAuth, async (req, res, next) => {
       studentId: req.user._id,
       coachingId: test.coachingId || null,
     };
+
+    // Check BEFORE saving whether this student has attempted before
+    const previousAttempts = await Result.countDocuments({
+      testId,
+      studentId: req.user._id,
+    });
+    const isFirstAttempt = previousAttempts === 0;
 
     const result = await Result.create(payload);
 
@@ -43,10 +53,10 @@ router.post("/submit", requireAuth, async (req, res, next) => {
       .exec()
       .catch(() => {});
 
-    // ── Emit real-time event to the coach's CoachingPage ─────────────────────
-    // Coach has joined socket room `coaching:{coachingId}` when page loaded.
-    // We send fresh counts so the page updates without any refresh.
-    if (test.coachingId) {
+    // ── Emit real-time event ONLY on first attempt ────────────────────────
+    // Retakes are saved to DB (visible in owner's attempt history panel)
+    // but do NOT push live updates so the leaderboard stays first-attempt only.
+    if (isFirstAttempt && test.coachingId) {
       try {
         // Fresh attempt count for THIS test from Results (source of truth)
         const freshTestAttempts = await Result.countDocuments({ testId });
@@ -62,8 +72,8 @@ router.post("/submit", requireAuth, async (req, res, next) => {
             coachingId: test.coachingId.toString(),
             testId: testId.toString(),
             testTitle: test.title,
-            totalAttempts: freshTestAttempts, // for updating this specific test row
-            totalStudents: freshStudents.length, // for updating the stats bar
+            totalAttempts: freshTestAttempts,
+            totalStudents: freshStudents.length,
             studentName: req.user.Name || "A student",
           });
       } catch (emitErr) {
