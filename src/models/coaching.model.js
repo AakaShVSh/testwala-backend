@@ -38,13 +38,6 @@
 
 // module.exports = mongoose.model("Coaching", CoachingSchema);
 
-
-
-
-
-
-
-
 const mongoose = require("mongoose");
 
 const CoachingSchema = new mongoose.Schema(
@@ -60,11 +53,10 @@ const CoachingSchema = new mongoose.Schema(
     },
     description: { type: String, default: "" },
 
-    // ── Location / Contact ─────────────────────────────────────────────────
     city: { type: String, default: "", trim: true },
     state: { type: String, default: "", trim: true },
     pincode: { type: String, default: "", trim: true },
-    fullAddress: { type: String, default: "", trim: true }, // Street address
+    fullAddress: { type: String, default: "", trim: true },
     landmark: { type: String, default: "", trim: true },
     email: { type: String, default: "", trim: true, lowercase: true },
     phone: { type: String, default: "", trim: true },
@@ -72,17 +64,21 @@ const CoachingSchema = new mongoose.Schema(
     website: { type: String, default: "", trim: true },
     logoUrl: { type: String, default: "" },
 
-    // ── Verification proof ─────────────────────────────────────────────────
-    // Coach submits these so admin can verify the coaching is real
     establishedYear: { type: Number, default: null },
-    studentCount: { type: String, default: "" }, // e.g. "200-500"
+    studentCount: { type: String, default: "" },
     googleMapsUrl: { type: String, default: "" },
-    registrationNumber: { type: String, default: "" }, // Govt reg. if any
-    additionalInfo: { type: String, default: "" }, // Anything else
+    registrationNumber: { type: String, default: "" },
+    additionalInfo: { type: String, default: "" },
 
     examTypes: {
       type: [String],
       enum: ["SSC", "UPSC", "BANK", "RAILWAY", "STATE", "DEFENCE", "OTHER"],
+      default: [],
+    },
+
+    // Free-text exam types entered when "OTHER" is selected
+    customExamTypes: {
+      type: [String],
       default: [],
     },
 
@@ -92,14 +88,12 @@ const CoachingSchema = new mongoose.Schema(
       required: true,
     },
 
-    // ── Admin approval flow ────────────────────────────────────────────────
-    // pending → approved (isActive=true) | rejected
     status: {
       type: String,
       enum: ["pending", "approved", "rejected"],
       default: "pending",
     },
-    adminNote: { type: String, default: "" }, // Reason for rejection etc.
+    adminNote: { type: String, default: "" },
     reviewedBy: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "User",
@@ -107,7 +101,7 @@ const CoachingSchema = new mongoose.Schema(
     },
     reviewedAt: { type: Date, default: null },
 
-    isActive: { type: Boolean, default: false }, // true only after approval
+    isActive: { type: Boolean, default: false },
   },
   { versionKey: false, timestamps: true },
 );
