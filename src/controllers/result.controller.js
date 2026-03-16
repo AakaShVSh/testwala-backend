@@ -7,11 +7,13 @@ const { getIO } = require("../socket");
 const router = express.Router();
 
 /* ── POST /results/submit ────────────────────────────────────────────────────
-   Called when student finishes / time runs out.
-   Computes percentile + emits socket event to coach's page instantly.
-   NOTE: Socket event is only emitted on the student's FIRST attempt.
-         Retakes save to DB normally but do NOT trigger live updates so
-         the leaderboard always reflects first-attempt scores only.
+   IMPORTANT: Client must send `shuffledQuestions` in the payload — the exact
+   array of question objects shown to the student during the test (post-shuffle).
+   This is stored so ResultPage can reconstruct the correct answer↔question
+   mapping even when questions were shuffled.
+
+   Socket emits ONLY on first attempt. totalAttempts counter on Test doc ONLY
+   increments on first attempt — retakes never affect stats or leaderboard.
 ──────────────────────────────────────────────────────────────────────────── */
 router.post("/submit", requireAuth, async (req, res, next) => {
   try {
@@ -21,11 +23,13 @@ router.post("/submit", requireAuth, async (req, res, next) => {
     const test = await Test.findById(testId).lean();
     if (!test) return res.status(404).json({ message: "Test not found" });
 
-    // Always use the authenticated user — ignore any client-sent studentId
     const payload = {
       ...req.body,
       studentId: req.user._id,
       coachingId: test.coachingId || null,
+      shuffledQuestions: Array.isArray(req.body.shuffledQuestions)
+        ? req.body.shuffledQuestions
+        : [],
     };
 
     // Check BEFORE saving whether this student has attempted before
@@ -37,7 +41,7 @@ router.post("/submit", requireAuth, async (req, res, next) => {
 
     const result = await Result.create(payload);
 
-    // Compute percentile: % of attempts scoring BELOW this student
+    // Percentile
     const totalAttempts = await Result.countDocuments({ testId });
     const below = await Result.countDocuments({
       testId,
@@ -45,40 +49,33 @@ router.post("/submit", requireAuth, async (req, res, next) => {
     });
     const percentile =
       totalAttempts > 1 ? Math.round((below / (totalAttempts - 1)) * 100) : 100;
-
     await Result.findByIdAndUpdate(result._id, { percentile });
 
-    // Increment attempt counter on Test doc (non-blocking, best-effort)
-    Test.findByIdAndUpdate(testId, { $inc: { totalAttempts: 1 } })
-      .exec()
-      .catch(() => {});
+    // ── Only on first attempt: increment counter + emit socket ───────────
+    if (isFirstAttempt) {
+      Test.findByIdAndUpdate(testId, { $inc: { totalAttempts: 1 } })
+        .exec()
+        .catch(() => {});
 
-    // ── Emit real-time event ONLY on first attempt ────────────────────────
-    // Retakes are saved to DB (visible in owner's attempt history panel)
-    // but do NOT push live updates so the leaderboard stays first-attempt only.
-    if (isFirstAttempt && test.coachingId) {
-      try {
-        // Fresh attempt count for THIS test from Results (source of truth)
-        const freshTestAttempts = await Result.countDocuments({ testId });
-
-        // Fresh unique student count for the whole coaching
-        const freshStudents = await Result.distinct("studentId", {
-          coachingId: test.coachingId,
-        });
-
-        getIO()
-          .to(`coaching:${test.coachingId.toString()}`)
-          .emit("test:attempted", {
-            coachingId: test.coachingId.toString(),
-            testId: testId.toString(),
-            testTitle: test.title,
-            totalAttempts: freshTestAttempts,
-            totalStudents: freshStudents.length,
-            studentName: req.user.Name || "A student",
+      if (test.coachingId) {
+        try {
+          const freshTestAttempts = await Result.countDocuments({ testId });
+          const freshStudents = await Result.distinct("studentId", {
+            coachingId: test.coachingId,
           });
-      } catch (emitErr) {
-        // Never let a socket error break the HTTP response
-        console.error("[socket emit error]", emitErr.message);
+          getIO()
+            .to(`coaching:${test.coachingId.toString()}`)
+            .emit("test:attempted", {
+              coachingId: test.coachingId.toString(),
+              testId: testId.toString(),
+              testTitle: test.title,
+              totalAttempts: freshTestAttempts,
+              totalStudents: freshStudents.length,
+              studentName: req.user.Name || "A student",
+            });
+        } catch (emitErr) {
+          console.error("[socket emit error]", emitErr.message);
+        }
       }
     }
 
@@ -101,13 +98,11 @@ router.get("/student/me", requireAuth, async (req, res, next) => {
   try {
     const filter = { studentId: req.user._id };
     if (req.query.testId) filter.testId = req.query.testId;
-
     const results = await Result.find(filter)
       .sort({ createdAt: -1 })
       .populate("testId", "title examType timeLimitMin slug")
-      .select("-allAnswers")
+      .select("-allAnswers -shuffledQuestions")
       .lean();
-
     return res.json({ status: 200, data: results });
   } catch (err) {
     next(err);
@@ -115,16 +110,15 @@ router.get("/student/me", requireAuth, async (req, res, next) => {
 });
 
 /* ── GET /results/test/:testId ───────────────────────────────────────────────
-   All results for one test — leaderboard for coaches.
+   All results for one test — used by owner for allAttempts list.
 ──────────────────────────────────────────────────────────────────────────── */
 router.get("/test/:testId", requireAuth, async (req, res, next) => {
   try {
     const results = await Result.find({ testId: req.params.testId })
       .sort({ percentage: -1, timeTaken: 1 })
       .populate("studentId", "Name Email Phone")
-      .select("-allAnswers")
+      .select("-allAnswers -shuffledQuestions")
       .lean();
-
     return res.json({ status: 200, data: results });
   } catch (err) {
     next(err);
@@ -132,9 +126,8 @@ router.get("/test/:testId", requireAuth, async (req, res, next) => {
 });
 
 /* ── GET /results/:id ────────────────────────────────────────────────────────
-   Full result for the review page.
-   Access: the student who took it, the coaching owner, or admin.
-   resultId itself acts as the access key for unauthenticated review links.
+   Full result — includes shuffledQuestions so ResultPage reconstructs
+   the correct answer↔question mapping.
 ──────────────────────────────────────────────────────────────────────────── */
 router.get("/:id", async (req, res, next) => {
   try {
@@ -145,7 +138,6 @@ router.get("/:id", async (req, res, next) => {
 
     if (!result) return res.status(404).json({ message: "Result not found" });
 
-    // If a cookie token is present, verify ownership
     const token = req.cookies?._user;
     if (token) {
       try {
@@ -157,7 +149,6 @@ router.get("/:id", async (req, res, next) => {
         const user = await User.findById(decoded._id)
           .select("-Password")
           .lean();
-
         if (user) {
           const isOwn = result.studentId._id.toString() === user._id.toString();
           const isAdmin = user.isAdmin;
@@ -167,15 +158,13 @@ router.get("/:id", async (req, res, next) => {
             const c = await Coaching.findById(result.coachingId).lean();
             isCoach = c && c.owner.toString() === user._id.toString();
           }
-          if (!isOwn && !isAdmin && !isCoach) {
+          if (!isOwn && !isAdmin && !isCoach)
             return res.status(403).json({ message: "Not authorised" });
-          }
         }
       } catch {
-        // Invalid token — treat as guest, allow access via resultId
+        /* invalid token — allow via resultId */
       }
     }
-    // No token = unauthenticated review via shared resultId link — allow
 
     return res.json({ status: 200, data: result });
   } catch (err) {
@@ -188,10 +177,8 @@ router.delete("/:id", requireAuth, async (req, res, next) => {
   try {
     if (!req.user.isAdmin)
       return res.status(403).json({ message: "Admin only" });
-
     const deleted = await Result.findByIdAndDelete(req.params.id);
     if (!deleted) return res.status(404).json({ message: "Not found" });
-
     return res.json({ message: "Result deleted" });
   } catch (err) {
     next(err);

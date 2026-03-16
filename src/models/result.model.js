@@ -83,23 +83,17 @@ const ResultSchema = new mongoose.Schema(
       default: null,
     },
 
-    score: { type: Number, default: 0 }, // correct answer count
+    score: { type: Number, default: 0 },
     totalQuestions: { type: Number, default: 0 },
     wrongAnswers: { type: Number, default: 0 },
     skipped: { type: Number, default: 0 },
-    percentage: { type: Number, default: 0 }, // auto-computed
-    timeTaken: { type: Number, default: 0 }, // total seconds
+    percentage: { type: Number, default: 0 },
+    timeTaken: { type: Number, default: 0 },
 
-    // ── Per-question time (seconds spent on each question) ──────────────────
-    // Map: questionIndex (string) → seconds spent   e.g. { "0": 45, "1": 12 }
-    // Questions the student never opened will have no entry (or 0).
-    questionTimes: {
-      type: Map,
-      of: Number,
-      default: {},
-    },
+    // ── Per-question time ──────────────────────────────────────────────────
+    questionTimes: { type: Map, of: Number, default: {} },
 
-    // Map: questionIndex → chosen option index  e.g. { "0": 2, "3": 1 }
+    // Map: questionIndex → chosen option index
     allAnswers: { type: Map, of: Number, default: {} },
 
     correctQus: { type: [Number], default: [] },
@@ -110,10 +104,17 @@ const ResultSchema = new mongoose.Schema(
     markedNotAnswered: { type: [Number], default: [] },
 
     isPassed: { type: Boolean, default: false },
-    passingMark: { type: Number, default: 40 }, // % required to pass
+    passingMark: { type: Number, default: 40 },
 
-    // Computed on-the-fly via leaderboard query, stored for caching
     percentile: { type: Number, default: null },
+
+    // ── Shuffled question order ────────────────────────────────────────────
+    // The exact array of questions shown to this student during the test,
+    // in the order they were presented (after shuffling).
+    // Stored so ResultPage can reconstruct correct answer↔question mapping.
+    // Each element is a full embedded question object (same shape as Test.questions).
+    // If empty/absent, fall back to the original test question order.
+    shuffledQuestions: { type: [mongoose.Schema.Types.Mixed], default: [] },
   },
   { versionKey: false, timestamps: true },
 );
@@ -133,6 +134,6 @@ ResultSchema.pre("save", function (next) {
 });
 
 ResultSchema.index({ studentId: 1, testId: 1 });
-ResultSchema.index({ testId: 1, percentage: -1, timeTaken: 1 }); // leaderboard
+ResultSchema.index({ testId: 1, percentage: -1, timeTaken: 1 });
 
 module.exports = mongoose.model("Result", ResultSchema);
