@@ -26,6 +26,7 @@
 //       coachingId,
 //       title,
 //       examType,
+//       customExamType,
 //       subject,
 //       totalQuestions,
 //       timeLimitMin,
@@ -34,25 +35,30 @@
 //       instructions,
 //       attachments,
 //     } = req.body;
+
 //     if (!coachingId || !title || !examType)
 //       return res
 //         .status(400)
 //         .json({ message: "coachingId, title, and examType are required" });
+
 //     const isOwner = await ownsCoaching(req.user._id, coachingId);
 //     if (!isOwner)
 //       return res
 //         .status(403)
 //         .json({ message: "Not authorised for this coaching" });
+
 //     const coaching = await Coaching.findById(coachingId).lean();
 //     if (!coaching || coaching.status !== "approved")
 //       return res
 //         .status(400)
 //         .json({ message: "Coaching must be approved before requesting tests" });
+
 //     const request = await TestRequest.create({
 //       coachingId,
 //       requestedBy: req.user._id,
 //       title,
 //       examType,
+//       customExamType: examType === "OTHER" ? (customExamType || "").trim() : "",
 //       subject: subject || "",
 //       totalQuestions: totalQuestions || 20,
 //       timeLimitMin: timeLimitMin || 30,
@@ -62,6 +68,7 @@
 //       attachments: attachments || [],
 //       status: "pending",
 //     });
+
 //     return res.status(201).json({
 //       message: "Test request submitted! Admin will create your test soon.",
 //       data: request,
@@ -79,7 +86,7 @@
 //       .populate({
 //         path: "createdTestId",
 //         select:
-//           "title slug accessToken totalMarks timeLimitMin visibility questions examType subject createdAt",
+//           "title slug accessToken totalMarks timeLimitMin visibility questions examType customExamType subject createdAt",
 //       })
 //       .sort({ createdAt: -1 })
 //       .lean();
@@ -102,6 +109,7 @@
 //       filter.$or = [
 //         { title: new RegExp(search, "i") },
 //         { examType: new RegExp(search, "i") },
+//         { customExamType: new RegExp(search, "i") },
 //       ];
 //     const requests = await TestRequest.find(filter)
 //       .populate("coachingId", "name city slug")
@@ -123,7 +131,7 @@
 // router.get("/admin/:id", requireAuth, requireAdmin, async (req, res, next) => {
 //   try {
 //     const request = await TestRequest.findById(req.params.id)
-//       .populate("coachingId", "name city slug owner examTypes")
+//       .populate("coachingId", "name city slug owner examTypes customExamTypes")
 //       .populate("requestedBy", "Name Email Phone")
 //       .populate(
 //         "createdTestId",
@@ -152,6 +160,7 @@
 //         return res
 //           .status(409)
 //           .json({ message: "Test already created for this request" });
+
 //       const { questions, adminNote } = req.body;
 //       if (!Array.isArray(questions) || questions.length === 0)
 //         return res.status(400).json({ message: "questions array is required" });
@@ -163,6 +172,8 @@
 //         coachingId: request.coachingId._id,
 //         createdBy: req.user._id,
 //         examType: request.examType,
+//         // Forward the custom exam type from the request
+//         customExamType: request.customExamType || "",
 //         subject: request.subject || "",
 //         timeLimitMin: request.timeLimitMin || 30,
 //         visibility: request.visibility || "public",
@@ -192,7 +203,7 @@
 //         const io = getIO();
 //         const populatedTest = await Test.findById(test._id)
 //           .select(
-//             "title slug accessToken totalMarks timeLimitMin visibility examType subject questions",
+//             "title slug accessToken totalMarks timeLimitMin visibility examType customExamType subject questions",
 //           )
 //           .lean();
 //         io.to(`user:${request.requestedBy.toString()}`).emit(
@@ -203,7 +214,10 @@
 //         );
 //         io.to(`coaching:${request.coachingId._id.toString()}`).emit(
 //           "test:created",
-//           { testRequestId: request._id, test: populatedTest },
+//           {
+//             testRequestId: request._id,
+//             test: populatedTest,
+//           },
 //         );
 //       } catch (socketErr) {
 //         console.warn("[socket] emit failed:", socketErr.message);
@@ -333,6 +347,7 @@ router.post("/create", requireAuth, async (req, res, next) => {
       title,
       examType,
       customExamType,
+      sections,
       subject,
       totalQuestions,
       timeLimitMin,
@@ -359,14 +374,42 @@ router.post("/create", requireAuth, async (req, res, next) => {
         .status(400)
         .json({ message: "Coaching must be approved before requesting tests" });
 
+    // Determine if this is a sectioned request
+    const isSectioned = Array.isArray(sections) && sections.length > 1;
+
+    if (isSectioned) {
+      for (const sec of sections) {
+        if (!sec.subject || !sec.subject.trim())
+          return res
+            .status(400)
+            .json({ message: "Each section must have a subject" });
+        if (!sec.totalQuestions || sec.totalQuestions < 1)
+          return res
+            .status(400)
+            .json({ message: "Each section must have at least 1 question" });
+      }
+    }
+
+    const computedTotalQuestions = isSectioned
+      ? sections.reduce((sum, sec) => sum + (sec.totalQuestions || 10), 0)
+      : totalQuestions || 20;
+
     const request = await TestRequest.create({
       coachingId,
       requestedBy: req.user._id,
       title,
       examType,
       customExamType: examType === "OTHER" ? (customExamType || "").trim() : "",
-      subject: subject || "",
-      totalQuestions: totalQuestions || 20,
+      // For non-sectioned, keep single subject; for sectioned, leave blank
+      subject: isSectioned ? "" : subject || "",
+      isSectioned,
+      sections: isSectioned
+        ? sections.map((s) => ({
+            subject: s.subject.trim(),
+            totalQuestions: s.totalQuestions || 10,
+          }))
+        : [],
+      totalQuestions: computedTotalQuestions,
       timeLimitMin: timeLimitMin || 30,
       difficulty: difficulty || "mixed",
       visibility: visibility || "public",
@@ -392,7 +435,7 @@ router.get("/mine", requireAuth, async (req, res, next) => {
       .populate({
         path: "createdTestId",
         select:
-          "title slug accessToken totalMarks timeLimitMin visibility questions examType customExamType subject createdAt",
+          "title slug accessToken totalMarks timeLimitMin visibility questions sections isSectioned examType customExamType subject createdAt",
       })
       .sort({ createdAt: -1 })
       .lean();
@@ -421,7 +464,7 @@ router.get("/admin/all", requireAuth, requireAdmin, async (req, res, next) => {
       .populate("coachingId", "name city slug")
       .populate("requestedBy", "Name Email Phone")
       .populate("reviewedBy", "Name Email")
-      .populate("createdTestId", "title slug totalMarks")
+      .populate("createdTestId", "title slug totalMarks isSectioned")
       .sort({ createdAt: -1 })
       .lean();
     const safe = requests.map(({ attachments, ...r }) => ({
@@ -441,7 +484,7 @@ router.get("/admin/:id", requireAuth, requireAdmin, async (req, res, next) => {
       .populate("requestedBy", "Name Email Phone")
       .populate(
         "createdTestId",
-        "title slug accessToken totalMarks timeLimitMin",
+        "title slug accessToken totalMarks timeLimitMin isSectioned sections",
       )
       .lean();
     if (!request) return res.status(404).json({ message: "Request not found" });
@@ -467,25 +510,67 @@ router.post(
           .status(409)
           .json({ message: "Test already created for this request" });
 
-      const { questions, adminNote } = req.body;
-      if (!Array.isArray(questions) || questions.length === 0)
-        return res.status(400).json({ message: "questions array is required" });
+      const { questions, sections, adminNote } = req.body;
+
+      // Decide mode based on the original request flag
+      const isSectioned = request.isSectioned === true;
+
+      if (isSectioned) {
+        // Sectioned mode — admin must supply sections[]
+        if (!Array.isArray(sections) || sections.length === 0)
+          return res
+            .status(400)
+            .json({
+              message: "sections array is required for sectioned tests",
+            });
+
+        for (const sec of sections) {
+          if (!sec.name || !sec.name.trim())
+            return res
+              .status(400)
+              .json({ message: "Each section must have a name" });
+          if (!Array.isArray(sec.questions) || sec.questions.length === 0)
+            return res.status(400).json({
+              message: `Section "${sec.name}" must have at least one question`,
+            });
+        }
+      } else {
+        // Non-sectioned mode — admin must supply flat questions[]
+        if (!Array.isArray(questions) || questions.length === 0)
+          return res
+            .status(400)
+            .json({ message: "questions array is required" });
+      }
 
       const slug = `${toSlug(request.title)}-${Date.now()}`;
+
       const test = await Test.create({
         title: request.title,
         slug,
         coachingId: request.coachingId._id,
         createdBy: req.user._id,
         examType: request.examType,
-        // Forward the custom exam type from the request
         customExamType: request.customExamType || "",
         subject: request.subject || "",
         timeLimitMin: request.timeLimitMin || 30,
         visibility: request.visibility || "public",
-        questions,
+        isSectioned,
+        // Sectioned path
+        sections: isSectioned
+          ? sections.map((s) => ({
+              name: s.name.trim(),
+              subject: (s.subject || "").trim(),
+              questions: s.questions,
+            }))
+          : [],
+        // Non-sectioned path
+        questions: isSectioned ? [] : questions,
         isActive: true,
       });
+
+      const totalQCount = isSectioned
+        ? sections.reduce((sum, s) => sum + s.questions.length, 0)
+        : questions.length;
 
       await TestRequest.findByIdAndUpdate(req.params.id, {
         status: "completed",
@@ -500,7 +585,7 @@ router.post(
         coachingId: request.coachingId._id,
         type: "test_ready",
         title: "Your test is ready! 🎉",
-        body: `"${test.title}" has been created with ${questions.length} questions. Share the link with your students.`,
+        body: `"${test.title}" has been created with ${totalQCount} questions${isSectioned ? ` across ${sections.length} sections` : ""}. Share the link with your students.`,
         testRequestId: request._id,
         testId: test._id,
       });
@@ -509,7 +594,7 @@ router.post(
         const io = getIO();
         const populatedTest = await Test.findById(test._id)
           .select(
-            "title slug accessToken totalMarks timeLimitMin visibility examType customExamType subject questions",
+            "title slug accessToken totalMarks timeLimitMin visibility examType customExamType subject isSectioned sections questions",
           )
           .lean();
         io.to(`user:${request.requestedBy.toString()}`).emit(
