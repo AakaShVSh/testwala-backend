@@ -83,6 +83,17 @@ const ResultSchema = new mongoose.Schema(
       default: null,
     },
 
+    // Add inside ResultSchema
+    sectionScores: [
+      {
+        name: { type: String }, // section name
+        subject: { type: String },
+        score: { type: Number, default: 0 },
+        total: { type: Number, default: 0 },
+        percentage: { type: Number, default: 0 },
+      },
+    ],
+
     score: { type: Number, default: 0 },
     totalQuestions: { type: Number, default: 0 },
     wrongAnswers: { type: Number, default: 0 },

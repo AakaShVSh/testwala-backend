@@ -1,3 +1,7 @@
+
+
+
+
 // const mongoose = require("mongoose");
 // const crypto = require("crypto");
 
@@ -45,6 +49,9 @@
 //       ],
 //       default: "GENERAL",
 //     },
+//     // Free-text exam type when examType is "OTHER" (e.g. "Banking", "Airforce")
+//     customExamType: { type: String, default: "", trim: true },
+
 //     subject: { type: String, lowercase: true, trim: true, default: "" },
 
 //     questions: [EmbeddedQuestionSchema],
@@ -58,9 +65,7 @@
 //     },
 //     password: { type: String, default: "" },
 
-//     // Unique token for WhatsApp share link — never changes after creation
 //     accessToken: { type: String, unique: true, sparse: true },
-
 //     totalAttempts: { type: Number, default: 0 },
 
 //     startsAt: { type: Date, default: null },
@@ -84,6 +89,21 @@
 // TestSchema.index({ slug: 1 });
 
 // module.exports = mongoose.model("Test", TestSchema);
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 
@@ -136,6 +156,18 @@ const TestSchema = new mongoose.Schema(
       ],
       default: "GENERAL",
     },
+
+    // Add inside TestSchema — alongside existing questions: [EmbeddedQuestionSchema]
+    isSectioned: { type: Boolean, default: false },
+
+    sections: [
+      {
+        name: { type: String, required: true, trim: true }, // e.g. "English"
+        subject: { type: String, trim: true, default: "" },
+        questions: [EmbeddedQuestionSchema],
+      },
+    ],
+
     // Free-text exam type when examType is "OTHER" (e.g. "Banking", "Airforce")
     customExamType: { type: String, default: "", trim: true },
 
@@ -163,8 +195,23 @@ const TestSchema = new mongoose.Schema(
   { versionKey: false, timestamps: true },
 );
 
+// TestSchema.pre("save", function (next) {
+//   this.totalMarks = this.questions.length;
+//   if (!this.accessToken) {
+//     this.accessToken = crypto.randomBytes(20).toString("hex");
+//   }
+//   next();
+// });
+
 TestSchema.pre("save", function (next) {
-  this.totalMarks = this.questions.length;
+  if (this.isSectioned && this.sections?.length) {
+    this.totalMarks = this.sections.reduce(
+      (sum, s) => sum + (s.questions?.length || 0),
+      0,
+    );
+  } else {
+    this.totalMarks = this.questions.length;
+  }
   if (!this.accessToken) {
     this.accessToken = crypto.randomBytes(20).toString("hex");
   }
