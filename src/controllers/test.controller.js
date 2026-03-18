@@ -312,24 +312,13 @@
 
 // module.exports = router;
 
-/**
- * src/controllers/test.controller.js  — COMPLETE FILE
- *
- * Changes from original:
- *   1. GET /tests/id/:id  — emits "coaching:test-viewed" to room:admin
- *      when the coaching OWNER views their own test
- *   2. GET /tests/:slug   — same emit for slug-based views
- *   All other routes are unchanged.
- */
-
-const express   = require("express");
-const Test      = require("../models/test.model");
-const Result    = require("../models/result.model");
-const Question  = require("../models/question.model");
-const Coaching  = require("../models/coaching.model");
+const express = require("express");
+const Test = require("../models/test.model");
+const Result = require("../models/result.model");
+const Question = require("../models/question.model");
+const Coaching = require("../models/coaching.model");
 const { requireAuth, optionalAuth } = require("../middlewares/auth.middleware");
 const { toSlug } = require("../utils/slug");
-const { getIO }  = require("../socket");
 
 const router = express.Router();
 
@@ -340,36 +329,16 @@ async function ownsCoaching(userId, coachingId) {
   return coaching && coaching.owner.toString() === userId.toString();
 }
 
-/**
- * Emit "coaching:test-viewed" to the admin room.
- * Called whenever a coaching owner fetches one of their tests.
- */
-async function emitTestViewed(user, test) {
-  try {
-    if (!test.coachingId) return;
-    const coaching = await Coaching.findById(test.coachingId).select("name").lean();
-    getIO().to("room:admin").emit("coaching:test-viewed", {
-      coachingId:   test.coachingId.toString(),
-      coachingName: coaching?.name || "Unknown coaching",
-      testId:       test._id.toString(),
-      testTitle:    test.title,
-      viewedAt:     new Date().toISOString(),
-      viewedBy: {
-        _id:   user._id,
-        Name:  user.Name,
-        Email: user.Email,
-      },
-    });
-  } catch (e) {
-    console.warn("[socket] coaching:test-viewed emit failed:", e.message);
-  }
-}
-
-/* ── POST /tests/create ───────────────────────────────────────────────── */
+/* ── POST /tests/create ───────────────────────────────────────────────────── */
 router.post("/create", requireAuth, async (req, res, next) => {
   try {
     const {
-      title, questionDocIds, inlineQuestions, coachingId, sections, ...rest
+      title,
+      questionDocIds,
+      inlineQuestions,
+      coachingId,
+      sections,
+      ...rest
     } = req.body;
 
     if (!title) return res.status(400).json({ message: "title is required" });
@@ -378,41 +347,51 @@ router.post("/create", requireAuth, async (req, res, next) => {
       coachingId &&
       !(await ownsCoaching(req.user._id, coachingId)) &&
       !req.user.isAdmin
-    )
-      return res.status(403).json({ message: "Not authorised for this coaching" });
+    ) {
+      return res
+        .status(403)
+        .json({ message: "Not authorised for this coaching" });
+    }
 
-    rest.slug      = `${toSlug(title)}-${Date.now()}`;
+    rest.slug = `${toSlug(title)}-${Date.now()}`;
     rest.createdBy = req.user._id;
     rest.coachingId = coachingId || null;
 
     const isSectioned = Array.isArray(sections) && sections.length > 1;
-    rest.isSectioned  = isSectioned;
+    rest.isSectioned = isSectioned;
 
     if (isSectioned) {
-      rest.sections  = sections;
+      // Sections provided directly — use them as-is
+      rest.sections = sections;
       rest.questions = [];
     } else {
+      // Original flat questions flow
       let questions = [];
       if (Array.isArray(questionDocIds) && questionDocIds.length > 0) {
-        const docs = await Question.find({ _id: { $in: questionDocIds } }).lean();
+        const docs = await Question.find({
+          _id: { $in: questionDocIds },
+        }).lean();
         docs.forEach((doc) =>
           doc.question.forEach((item) =>
-            questions.push({ sourceId: item._id, ...item })
-          )
+            questions.push({ sourceId: item._id, ...item }),
+          ),
         );
       }
-      if (Array.isArray(inlineQuestions) && inlineQuestions.length > 0)
+      if (Array.isArray(inlineQuestions) && inlineQuestions.length > 0) {
         questions = [...questions, ...inlineQuestions];
+      }
       rest.questions = questions;
-      rest.sections  = [];
+      rest.sections = [];
     }
 
     const test = await Test.create({ title, ...rest });
     return res.status(201).json({ message: "Test created", data: test });
-  } catch (err) { next(err); }
+  } catch (err) {
+    next(err);
+  }
 });
 
-/* ── GET /tests ───────────────────────────────────────────────────────── */
+/* ── GET /tests ───────────────────────────────────────────────────────────── */
 router.get("/", async (req, res, next) => {
   try {
     const filter = { isActive: true, visibility: "public" };
@@ -429,12 +408,12 @@ router.get("/", async (req, res, next) => {
       .select("-questions -sections -password")
       .lean();
     return res.json({ status: 200, data: tests });
-  } catch (err) { next(err); }
+  } catch (err) {
+    next(err);
+  }
 });
 
-/* ── GET /tests/id/:id ────────────────────────────────────────────────── */
-// Owner or admin can fetch full test by _id.
-// Emits "coaching:test-viewed" to room:admin when a coaching OWNER views.
+/* ── GET /tests/id/:id ────────────────────────────────────────────────────── */
 router.get("/id/:id", requireAuth, async (req, res, next) => {
   try {
     const test = await Test.findById(req.params.id).lean();
@@ -442,34 +421,36 @@ router.get("/id/:id", requireAuth, async (req, res, next) => {
 
     const isOwner =
       test.coachingId && (await ownsCoaching(req.user._id, test.coachingId));
-
-    if (!isOwner && !req.user.isAdmin)
+    if (!isOwner && !req.user.isAdmin) {
       return res.status(403).json({ message: "Not authorised" });
-
-    // ── Emit "coaching viewed this test" to admin room ──────────────────
-    // Only fires when the coaching OWNER views — not when admin views.
-    if (isOwner && !req.user.isAdmin)
-      await emitTestViewed(req.user, test);
+    }
 
     return res.json({ status: 200, data: stripPassword(test) });
-  } catch (err) { next(err); }
+  } catch (err) {
+    next(err);
+  }
 });
 
-/* ── GET /tests/token/:token ──────────────────────────────────────────── */
+/* ── GET /tests/token/:token ──────────────────────────────────────────────── */
 router.get("/token/:token", optionalAuth, async (req, res, next) => {
   try {
     const test = await Test.findOne({
       accessToken: req.params.token,
-      isActive:    true,
+      isActive: true,
     }).lean();
-    if (!test) return res.status(404).json({ message: "Test not found or link expired" });
+    if (!test)
+      return res
+        .status(404)
+        .json({ message: "Test not found or link expired" });
 
     const { password: _p, accessToken: _t, ...safeTest } = test;
     return res.json({ status: 200, data: safeTest });
-  } catch (err) { next(err); }
+  } catch (err) {
+    next(err);
+  }
 });
 
-/* ── GET /tests/:id/leaderboard ───────────────────────────────────────── */
+/* ── GET /tests/:id/leaderboard ───────────────────────────────────────────── */
 router.get("/:id/leaderboard", requireAuth, async (req, res, next) => {
   try {
     const test = await Test.findById(req.params.id).lean();
@@ -477,24 +458,26 @@ router.get("/:id/leaderboard", requireAuth, async (req, res, next) => {
 
     const isOwner =
       test.coachingId && (await ownsCoaching(req.user._id, test.coachingId));
-    if (!isOwner && !req.user.isAdmin)
+    if (!isOwner && !req.user.isAdmin) {
       return res.status(403).json({ message: "Not authorised" });
+    }
 
     const results = await Result.find({ testId: req.params.id })
       .sort({ percentage: -1, timeTaken: 1 })
       .limit(50)
       .populate("studentId", "Name Email Phone")
       .select(
-        "-allAnswers -correctQus -wrongQus -answeredQus " +
-        "-notAnsweredQus -markedAndAnswered -markedNotAnswered"
+        "-allAnswers -correctQus -wrongQus -answeredQus -notAnsweredQus -markedAndAnswered -markedNotAnswered",
       )
       .lean();
 
     return res.json({ status: 200, data: results });
-  } catch (err) { next(err); }
+  } catch (err) {
+    next(err);
+  }
 });
 
-/* ── GET /tests/:id/stats ─────────────────────────────────────────────── */
+/* ── GET /tests/:id/stats ─────────────────────────────────────────────────── */
 router.get("/:id/stats", requireAuth, async (req, res, next) => {
   try {
     const test = await Test.findById(req.params.id).lean();
@@ -502,42 +485,60 @@ router.get("/:id/stats", requireAuth, async (req, res, next) => {
 
     const isOwner =
       test.coachingId && (await ownsCoaching(req.user._id, test.coachingId));
-    if (!isOwner && !req.user.isAdmin)
+    if (!isOwner && !req.user.isAdmin) {
       return res.status(403).json({ message: "Not authorised" });
+    }
 
     const results = await Result.find({ testId: req.params.id }).lean();
     if (!results.length) {
       return res.json({
         status: 200,
         data: {
-          totalAttempts: 0, avgPercentage: 0, passCount: 0, passRate: 0,
-          highestScore: 0, lowestScore: 0,
+          totalAttempts: 0,
+          avgPercentage: 0,
+          passCount: 0,
+          passRate: 0,
+          highestScore: 0,
+          lowestScore: 0,
+          // Empty section stats for sectioned tests
           sectionStats: test.isSectioned
-            ? test.sections.map((s) => ({ name: s.name, subject: s.subject, avgPercentage: 0 }))
+            ? test.sections.map((s) => ({
+                name: s.name,
+                subject: s.subject,
+                avgPercentage: 0,
+              }))
             : [],
         },
       });
     }
 
-    const scores       = results.map((r) => r.percentage || 0);
+    const scores = results.map((r) => r.percentage || 0);
     const totalAttempts = results.length;
-    const avgPercentage = Math.round(scores.reduce((a, b) => a + b, 0) / totalAttempts);
-    const passCount     = results.filter((r) => r.isPassed).length;
+    const avgPercentage = Math.round(
+      scores.reduce((a, b) => a + b, 0) / totalAttempts,
+    );
+    const passCount = results.filter((r) => r.isPassed).length;
 
+    // Per-section aggregate stats for sectioned tests
     let sectionStats = [];
     if (test.isSectioned && test.sections?.length) {
       sectionStats = test.sections.map((sec) => {
-        const secPcts = results
+        const secPercentages = results
           .flatMap((r) => r.sectionScores || [])
           .filter((ss) => ss.name === sec.name)
           .map((ss) => ss.percentage || 0);
+
+        const avgSectionPct = secPercentages.length
+          ? Math.round(
+              secPercentages.reduce((a, b) => a + b, 0) / secPercentages.length,
+            )
+          : 0;
+
         return {
-          name:           sec.name,
-          subject:        sec.subject,
+          name: sec.name,
+          subject: sec.subject,
           totalQuestions: sec.questions.length,
-          avgPercentage:  secPcts.length
-            ? Math.round(secPcts.reduce((a, b) => a + b, 0) / secPcts.length)
-            : 0,
+          avgPercentage: avgSectionPct,
         };
       });
     }
@@ -545,17 +546,21 @@ router.get("/:id/stats", requireAuth, async (req, res, next) => {
     return res.json({
       status: 200,
       data: {
-        totalAttempts, avgPercentage, passCount,
-        passRate:     Math.round((passCount / totalAttempts) * 100),
+        totalAttempts,
+        avgPercentage,
+        passCount,
+        passRate: Math.round((passCount / totalAttempts) * 100),
         highestScore: Math.max(...scores),
-        lowestScore:  Math.min(...scores),
+        lowestScore: Math.min(...scores),
         sectionStats,
       },
     });
-  } catch (err) { next(err); }
+  } catch (err) {
+    next(err);
+  }
 });
 
-/* ── PATCH /tests/:id ─────────────────────────────────────────────────── */
+/* ── PATCH /tests/:id ─────────────────────────────────────────────────────── */
 router.patch("/:id", requireAuth, async (req, res, next) => {
   try {
     const test = await Test.findById(req.params.id).lean();
@@ -563,23 +568,28 @@ router.patch("/:id", requireAuth, async (req, res, next) => {
 
     const isOwner =
       test.coachingId && (await ownsCoaching(req.user._id, test.coachingId));
-    if (!isOwner && !req.user.isAdmin)
+    if (!isOwner && !req.user.isAdmin) {
       return res.status(403).json({ message: "Not authorised" });
+    }
 
     delete req.body.createdBy;
     delete req.body.accessToken;
     delete req.body.totalAttempts;
+    // Prevent silently flipping isSectioned after creation
     delete req.body.isSectioned;
 
     const updated = await Test.findByIdAndUpdate(req.params.id, req.body, {
-      new: true, runValidators: true,
+      new: true,
+      runValidators: true,
     }).lean();
 
     return res.json({ message: "Test updated", data: stripPassword(updated) });
-  } catch (err) { next(err); }
+  } catch (err) {
+    next(err);
+  }
 });
 
-/* ── DELETE /tests/:id ────────────────────────────────────────────────── */
+/* ── DELETE /tests/:id ────────────────────────────────────────────────────── */
 router.delete("/:id", requireAuth, async (req, res, next) => {
   try {
     const test = await Test.findById(req.params.id).lean();
@@ -587,35 +597,37 @@ router.delete("/:id", requireAuth, async (req, res, next) => {
 
     const isOwner =
       test.coachingId && (await ownsCoaching(req.user._id, test.coachingId));
-    if (!isOwner && !req.user.isAdmin)
+    if (!isOwner && !req.user.isAdmin) {
       return res.status(403).json({ message: "Not authorised" });
+    }
 
     await Test.findByIdAndUpdate(req.params.id, { isActive: false });
     return res.json({ message: "Test deactivated" });
-  } catch (err) { next(err); }
+  } catch (err) {
+    next(err);
+  }
 });
 
-/* ── GET /tests/:slug  — MUST be last ────────────────────────────────── */
-// Emits "coaching:test-viewed" when the coaching OWNER views by slug.
+/* ── GET /tests/:slug — MUST be last ─────────────────────────────────────── */
 router.get("/:slug", optionalAuth, async (req, res, next) => {
   try {
-    const test = await Test.findOne({ slug: req.params.slug, isActive: true }).lean();
+    const test = await Test.findOne({
+      slug: req.params.slug,
+      isActive: true,
+    }).lean();
     if (!test) return res.status(404).json({ message: "Test not found" });
 
     if (test.visibility === "private") {
-      if (!req.query.password || req.query.password !== test.password)
+      if (!req.query.password || req.query.password !== test.password) {
         return res.status(403).json({ message: "Invalid or missing password" });
-    }
-
-    // ── Emit "coaching viewed this test" to admin room ──────────────────
-    if (req.user && !req.user.isAdmin && test.coachingId) {
-      const isOwner = await ownsCoaching(req.user._id, test.coachingId);
-      if (isOwner) await emitTestViewed(req.user, test);
+      }
     }
 
     const { password: _p, ...safeTest } = test;
     return res.json({ status: 200, data: safeTest });
-  } catch (err) { next(err); }
+  } catch (err) {
+    next(err);
+  }
 });
 
 module.exports = router;

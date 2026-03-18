@@ -367,22 +367,22 @@
 // module.exports = router;
 
 /**
- * src/controllers/coaching.controller.js  — COMPLETE FILE
+ * src/controllers/coaching.controller.js
  *
- * No logic changes from original.
- * Included here as the complete authoritative file for reference.
- * The coaching:test-viewed emit is handled in test.controller.js,
- * not here — so this file is identical to the original.
+ * FIXES:
+ * - POST /coaching/create now emits "coaching:new-request" to "room:admin"
+ *   so admin dashboards update in real-time without refresh
+ * - PATCH approve/reject emit "coaching:status-changed" to the owner's user room
+ *   so the owner sees their status update live
  */
-
-const express  = require("express");
+const express = require("express");
 const Coaching = require("../models/coaching.model");
-const User     = require("../models/User.model");
-const Test     = require("../models/test.model");
-const Result   = require("../models/result.model");
+const User = require("../models/User.model");
+const Test = require("../models/test.model");
+const Result = require("../models/result.model");
 const { requireAuth } = require("../middlewares/auth.middleware");
-const { toSlug }      = require("../utils/slug");
-const { getIO }       = require("../socket");
+const { toSlug } = require("../utils/slug");
+const { getIO } = require("../socket");
 
 const router = express.Router();
 
@@ -394,7 +394,7 @@ function requireAdmin(req, res, next) {
 async function withLiveAttempts(tests) {
   if (!tests.length) return tests;
   const testIds = tests.map((t) => t._id);
-  const counts  = await Result.aggregate([
+  const counts = await Result.aggregate([
     { $match: { testId: { $in: testIds } } },
     { $group: { _id: "$testId", count: { $sum: 1 } } },
   ]);
@@ -406,7 +406,7 @@ async function withLiveAttempts(tests) {
   }));
 }
 
-/* ── POST /coaching/create ────────────────────────────────────────────── */
+/* ── POST /coaching/create ───────────────────────────────────────────────── */
 router.post("/create", requireAuth, async (req, res, next) => {
   try {
     const { name } = req.body;
@@ -425,18 +425,19 @@ router.post("/create", requireAuth, async (req, res, next) => {
       });
     }
 
-    const baseSlug  = toSlug(name);
-    req.body.slug   = `${baseSlug}-${Date.now()}`;
-    req.body.owner  = req.user._id;
+    const baseSlug = toSlug(name);
+    req.body.slug = `${baseSlug}-${Date.now()}`;
+    req.body.owner = req.user._id;
     req.body.status = "pending";
     req.body.isActive = false;
 
     const coaching = await Coaching.create(req.body);
     await User.findByIdAndUpdate(req.user._id, { coachingId: coaching._id });
 
-    // Notify all admin tabs in real-time
+    // ── Notify all admin tabs in real-time ──────────────────────────────
     try {
-      const io       = getIO();
+      const io = getIO();
+      // Populate owner for the admin table
       const populated = await Coaching.findById(coaching._id)
         .populate("owner", "Name Email Phone createdAt")
         .lean();
@@ -447,8 +448,7 @@ router.post("/create", requireAuth, async (req, res, next) => {
     }
 
     return res.status(201).json({
-      message:
-        "Registration submitted! We will verify and activate your coaching within 24 hours.",
+      message: "Registration submitted! We will verify and activate your coaching within 24 hours.",
       data: coaching,
     });
   } catch (err) {
@@ -457,117 +457,97 @@ router.post("/create", requireAuth, async (req, res, next) => {
   }
 });
 
-/* ── GET /coaching/admin/requests ────────────────────────────────────── */
-// NOTE: This route is now superseded by GET /admin/coaching/requests
-// Kept for backwards compatibility.
-router.get(
-  "/admin/requests",
-  requireAuth, requireAdmin,
-  async (req, res, next) => {
+/* ── GET /coaching/admin/requests ────────────────────────────────────────── */
+router.get("/admin/requests", requireAuth, requireAdmin, async (req, res, next) => {
+  try {
+    const { status, search } = req.query;
+    const filter = {};
+    if (status && ["pending", "approved", "rejected"].includes(status)) filter.status = status;
+    if (search) {
+      filter.$or = [
+        { name: new RegExp(search, "i") },
+        { city: new RegExp(search, "i") },
+        { email: new RegExp(search, "i") },
+      ];
+    }
+    const requests = await Coaching.find(filter)
+      .populate("owner", "Name Email Phone createdAt")
+      .populate("reviewedBy", "Name Email")
+      .sort({ createdAt: -1 })
+      .lean();
+    return res.json({ status: 200, data: requests });
+  } catch (err) { next(err); }
+});
+
+/* ── PATCH /coaching/admin/:id/approve ───────────────────────────────────── */
+router.patch("/admin/:id/approve", requireAuth, requireAdmin, async (req, res, next) => {
+  try {
+    const coaching = await Coaching.findById(req.params.id);
+    if (!coaching) return res.status(404).json({ message: "Coaching not found" });
+
+    coaching.status = "approved";
+    coaching.isActive = true;
+    coaching.adminNote = req.body.adminNote || "";
+    coaching.reviewedBy = req.user._id;
+    coaching.reviewedAt = new Date();
+    await coaching.save();
+
+    // Notify the owner in real-time
     try {
-      const { status, search } = req.query;
-      const filter = {};
-      if (status && ["pending","approved","rejected"].includes(status))
-        filter.status = status;
-      if (search)
-        filter.$or = [
-          { name:  new RegExp(search, "i") },
-          { city:  new RegExp(search, "i") },
-          { email: new RegExp(search, "i") },
-        ];
+      const io = getIO();
+      io.to(`user:${coaching.owner.toString()}`).emit("coaching:status-changed", {
+        coachingId: coaching._id,
+        status: "approved",
+        message: `"${coaching.name}" has been approved and is now live! 🎉`,
+      });
+    } catch (e) { console.warn("[socket]", e.message); }
 
-      const requests = await Coaching.find(filter)
-        .populate("owner",      "Name Email Phone createdAt")
-        .populate("reviewedBy", "Name Email")
-        .sort({ createdAt: -1 })
-        .lean();
+    return res.json({ message: `"${coaching.name}" approved and is now live.`, data: coaching });
+  } catch (err) { next(err); }
+});
 
-      return res.json({ status: 200, data: requests });
-    } catch (err) { next(err); }
-  }
-);
+/* ── PATCH /coaching/admin/:id/reject ────────────────────────────────────── */
+router.patch("/admin/:id/reject", requireAuth, requireAdmin, async (req, res, next) => {
+  try {
+    const coaching = await Coaching.findById(req.params.id);
+    if (!coaching) return res.status(404).json({ message: "Coaching not found" });
 
-/* ── PATCH /coaching/admin/:id/approve ───────────────────────────────── */
-// NOTE: superseded by PATCH /admin/coaching/:id/approve — kept for compat.
-router.patch(
-  "/admin/:id/approve",
-  requireAuth, requireAdmin,
-  async (req, res, next) => {
+    coaching.status = "rejected";
+    coaching.isActive = false;
+    coaching.adminNote = req.body.adminNote || "Does not meet verification criteria.";
+    coaching.reviewedBy = req.user._id;
+    coaching.reviewedAt = new Date();
+    await coaching.save();
+
+    await User.findByIdAndUpdate(coaching.owner, { $unset: { coachingId: "" } });
+
+    // Notify the owner
     try {
-      const coaching = await Coaching.findById(req.params.id);
-      if (!coaching) return res.status(404).json({ message: "Coaching not found" });
+      const io = getIO();
+      io.to(`user:${coaching.owner.toString()}`).emit("coaching:status-changed", {
+        coachingId: coaching._id,
+        status: "rejected",
+        message: `Your coaching application was rejected. Reason: ${coaching.adminNote}`,
+      });
+    } catch (e) { console.warn("[socket]", e.message); }
 
-      coaching.status     = "approved";
-      coaching.isActive   = true;
-      coaching.adminNote  = req.body.adminNote || "";
-      coaching.reviewedBy = req.user._id;
-      coaching.reviewedAt = new Date();
-      await coaching.save();
+    return res.json({ message: `"${coaching.name}" rejected.`, data: coaching });
+  } catch (err) { next(err); }
+});
 
-      try {
-        getIO()
-          .to(`user:${coaching.owner.toString()}`)
-          .emit("coaching:status-changed", {
-            coachingId: coaching._id,
-            status:     "approved",
-            message:    `"${coaching.name}" has been approved and is now live! 🎉`,
-          });
-      } catch (e) { console.warn("[socket]", e.message); }
-
-      return res.json({ message: `"${coaching.name}" approved and is now live.`, data: coaching });
-    } catch (err) { next(err); }
-  }
-);
-
-/* ── PATCH /coaching/admin/:id/reject ────────────────────────────────── */
-// NOTE: superseded by PATCH /admin/coaching/:id/reject — kept for compat.
-router.patch(
-  "/admin/:id/reject",
-  requireAuth, requireAdmin,
-  async (req, res, next) => {
-    try {
-      const coaching = await Coaching.findById(req.params.id);
-      if (!coaching) return res.status(404).json({ message: "Coaching not found" });
-
-      coaching.status     = "rejected";
-      coaching.isActive   = false;
-      coaching.adminNote  = req.body.adminNote || "Does not meet verification criteria.";
-      coaching.reviewedBy = req.user._id;
-      coaching.reviewedAt = new Date();
-      await coaching.save();
-
-      await User.findByIdAndUpdate(coaching.owner, { $unset: { coachingId: "" } });
-
-      try {
-        getIO()
-          .to(`user:${coaching.owner.toString()}`)
-          .emit("coaching:status-changed", {
-            coachingId: coaching._id,
-            status:     "rejected",
-            message:    `Your coaching application was rejected. Reason: ${coaching.adminNote}`,
-          });
-      } catch (e) { console.warn("[socket]", e.message); }
-
-      return res.json({ message: `"${coaching.name}" rejected.`, data: coaching });
-    } catch (err) { next(err); }
-  }
-);
-
-/* ── GET /coaching ────────────────────────────────────────────────────── */
+/* ── GET /coaching ───────────────────────────────────────────────────────── */
 router.get("/", async (req, res, next) => {
   try {
     const filter = { isActive: true, status: "approved" };
     if (req.query.examType) filter.examTypes = req.query.examType;
     if (req.query.city) filter.city = new RegExp(req.query.city, "i");
-    const list = await Coaching.find(filter)
-      .select("-__v")
-      .populate("owner", "Name Email")
-      .lean();
+    const list = await Coaching.find(filter).select("-__v")
+      .populate("owner", "Name Email").lean();
     return res.json({ status: 200, data: list });
   } catch (err) { next(err); }
 });
 
-/* ── GET /coaching/mine ───────────────────────────────────────────────── */
+/* ── GET /coaching/mine ──────────────────────────────────────────────────── */
 router.get("/mine", requireAuth, async (req, res, next) => {
   try {
     if (!req.user.coachingId)
@@ -580,54 +560,45 @@ router.get("/mine", requireAuth, async (req, res, next) => {
 
     const uniqueStudents = await Result.distinct("studentId", { coachingId: coaching._id });
     const rawTests = await Test.find({ coachingId: coaching._id, isActive: true })
-      .select("title slug examType subject timeLimitMin totalMarks visibility accessToken isSectioned sections createdAt")
+      .select("title slug examType subject timeLimitMin totalMarks visibility accessToken createdAt")
       .lean();
     const tests = await withLiveAttempts(rawTests);
 
-    return res.json({
-      status: 200,
-      data: { ...coaching, totalStudents: uniqueStudents.length, tests },
-    });
+    return res.json({ status: 200, data: { ...coaching, totalStudents: uniqueStudents.length, tests } });
   } catch (err) { next(err); }
 });
 
-/* ── GET /coaching/students ───────────────────────────────────────────── */
+/* ── GET /coaching/students ──────────────────────────────────────────────── */
 router.get("/students", requireAuth, async (req, res, next) => {
   try {
-    if (!req.user.coachingId)
-      return res.status(403).json({ message: "Not a coaching owner" });
-
+    if (!req.user.coachingId) return res.status(403).json({ message: "Not a coaching owner" });
     const coachingId = req.user.coachingId;
     const results = await Result.find({ coachingId })
       .populate("studentId", "Name Email Phone")
-      .populate("testId",    "title totalMarks examType")
+      .populate("testId", "title totalMarks examType")
       .select("studentId testId score totalQuestions percentage percentile timeTaken createdAt")
-      .sort({ createdAt: -1 })
-      .lean();
+      .sort({ createdAt: -1 }).lean();
 
     const studentMap = {};
     results.forEach((r) => {
       if (!r.studentId) return;
       const sid = r.studentId._id.toString();
-      if (!studentMap[sid])
-        studentMap[sid] = {
-          _id: r.studentId._id, Name: r.studentId.Name,
-          Email: r.studentId.Email, Phone: r.studentId.Phone,
-          totalTests: 0, percentages: [], lastAttempt: null,
-        };
+      if (!studentMap[sid]) {
+        studentMap[sid] = { _id: r.studentId._id, Name: r.studentId.Name,
+          Email: r.studentId.Email, Phone: r.studentId.Phone, totalTests: 0,
+          percentages: [], lastAttempt: null };
+      }
       const s = studentMap[sid];
-      s.totalTests++;
+      s.totalTests += 1;
       s.percentages.push(r.percentage || 0);
-      if (!s.lastAttempt || new Date(r.createdAt) > new Date(s.lastAttempt))
-        s.lastAttempt = r.createdAt;
+      if (!s.lastAttempt || new Date(r.createdAt) > new Date(s.lastAttempt)) s.lastAttempt = r.createdAt;
     });
 
     const students = Object.values(studentMap).map((s) => ({
       _id: s._id, Name: s.Name, Email: s.Email, Phone: s.Phone,
       totalTests: s.totalTests,
       avgPercentage: s.percentages.length
-        ? Math.round(s.percentages.reduce((a, b) => a + b, 0) / s.percentages.length)
-        : 0,
+        ? Math.round(s.percentages.reduce((a, b) => a + b, 0) / s.percentages.length) : 0,
       lastAttempt: s.lastAttempt,
     }));
 
@@ -635,24 +606,23 @@ router.get("/students", requireAuth, async (req, res, next) => {
   } catch (err) { next(err); }
 });
 
-/* ── GET /coaching/:slug ──────────────────────────────────────────────── */
+/* ── GET /coaching/:slug ─────────────────────────────────────────────────── */
 router.get("/:slug", async (req, res, next) => {
   try {
     const coaching = await Coaching.findOne({
-      slug: req.params.slug, isActive: true, status: "approved",
-    }).populate("owner", "Name").lean();
+      slug: req.params.slug, isActive: true, status: "approved" })
+      .populate("owner", "Name").lean();
     if (!coaching) return res.status(404).json({ message: "Coaching not found" });
 
-    const rawTests = await Test.find({
-      coachingId: coaching._id, isActive: true, visibility: "public",
-    }).select("title slug examType subject timeLimitMin totalMarks createdAt isSectioned").lean();
+    const rawTests = await Test.find({ coachingId: coaching._id, isActive: true, visibility: "public" })
+      .select("title slug examType subject timeLimitMin totalMarks createdAt").lean();
     const tests = await withLiveAttempts(rawTests);
 
     return res.json({ status: 200, data: { ...coaching, tests } });
   } catch (err) { next(err); }
 });
 
-/* ── PATCH /coaching/:id ──────────────────────────────────────────────── */
+/* ── PATCH /coaching/:id ─────────────────────────────────────────────────── */
 router.patch("/:id", requireAuth, async (req, res, next) => {
   try {
     const coaching = await Coaching.findById(req.params.id).lean();
@@ -660,14 +630,12 @@ router.patch("/:id", requireAuth, async (req, res, next) => {
     if (coaching.owner.toString() !== req.user._id.toString() && !req.user.isAdmin)
       return res.status(403).json({ message: "Not authorised" });
     if (req.body.name && !req.body.slug) req.body.slug = toSlug(req.body.name);
-    const updated = await Coaching.findByIdAndUpdate(
-      req.params.id, req.body, { new: true }
-    ).lean();
+    const updated = await Coaching.findByIdAndUpdate(req.params.id, req.body, { new: true }).lean();
     return res.json({ message: "Coaching updated", data: updated });
   } catch (err) { next(err); }
 });
 
-/* ── DELETE /coaching/:id ─────────────────────────────────────────────── */
+/* ── DELETE /coaching/:id ────────────────────────────────────────────────── */
 router.delete("/:id", requireAuth, async (req, res, next) => {
   try {
     const coaching = await Coaching.findById(req.params.id).lean();
