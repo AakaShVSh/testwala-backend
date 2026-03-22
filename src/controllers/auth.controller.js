@@ -814,9 +814,9 @@ router.post("/forgot-password", async (req, res, next) => {
       try {
         await getResend().emails.send({
           from:
-            process.env.RESEND_FROM_EMAIL || "TestWala <noreply@testwala.in>",
+            process.env.RESEND_FROM_EMAIL || "Revision Karlo <noreply@revisionkarlo.in>",
           to: Email,
-          subject: "TestWala — Aapka Password Reset OTP",
+          subject: "Revision Karlo — Aapka Password Reset OTP",
           html: `
 <!DOCTYPE html>
 <html>
@@ -833,7 +833,7 @@ router.post("/forgot-password", async (req, res, next) => {
         <tr>
           <td style="background:linear-gradient(135deg,#0f1e3a,#2d5fa8);padding:28px 32px 24px;">
             <p style="margin:0 0 16px;font-size:14px;font-weight:800;color:#fff;letter-spacing:-0.2px;">
-              Test<span style="color:#60a5fa;">Wala</span>
+             Revision Karlo
             </p>
             <h1 style="margin:0 0 4px;font-size:22px;font-weight:800;color:#fff;letter-spacing:-0.5px;">
               Password Reset OTP
@@ -879,7 +879,7 @@ router.post("/forgot-password", async (req, res, next) => {
         <tr>
           <td style="padding:16px 32px 24px;border-top:1px solid #f1f5f9;">
             <p style="margin:0;font-size:12px;color:#cbd5e1;text-align:center;">
-              © 2025 TestWala · Yeh ek automated email hai, reply mat karein.
+              © 2025 Revision Karlo · Yeh ek automated email hai, reply mat karein.
             </p>
           </td>
         </tr>
