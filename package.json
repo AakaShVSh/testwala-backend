@@ -1,10 +1,10 @@
 {
-  "name": "test-wala-backend",
+  "name": "Revision-Karlo-Backend",
   "version": "1.0.0",
   "description": "",
   "main": "index.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1",
+    "test": "node tests/run.test.js",
     "start": "nodemon ./server"
   },
   "keywords": [],
@@ -17,15 +17,21 @@
     "dotenv": "^16.4.1",
     "emailjs": "^4.0.3",
     "express": "^4.18.2",
+    "express-mongo-sanitize": "^2.2.0",
+    "express-rate-limit": "^8.3.1",
     "express-validator": "^7.0.1",
     "gitignore": "^0.7.0",
+    "helmet": "^8.1.0",
+    "hpp": "^0.2.3",
     "jsonwebtoken": "^9.0.2",
     "mongoose": "^8.1.1",
-    "morgan": "^1.10.0",
+    "morgan": "^1.10.1",
     "node-mailjet": "^6.0.5",
     "passport": "^0.7.0",
     "passport-google-oauth20": "^2.0.0",
+    "resend": "^6.9.4",
     "socket.io": "^4.8.3",
-    "socket.io-client": "^4.8.3"
+    "socket.io-client": "^4.8.3",
+    "xss-clean": "^0.1.4"
   }
 }

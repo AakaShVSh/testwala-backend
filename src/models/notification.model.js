@@ -2,7 +2,6 @@ const mongoose = require("mongoose");
 
 const NotificationSchema = new mongoose.Schema(
   {
-    // Who gets this notification
     userId: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "User",
@@ -15,21 +14,29 @@ const NotificationSchema = new mongoose.Schema(
       default: null,
     },
 
-    // Content
     type: {
       type: String,
       enum: [
-        "test_ready", // admin created test from request
-        "request_rejected", // admin rejected test request
-        "request_processing", // admin started working
-        "coaching_approved", // coaching approved by admin
-        "coaching_rejected", // coaching rejected by admin
+        "test_ready", // Admin created test from request
+        "request_rejected", // Admin rejected test request
+        "request_processing", // Admin started working on request
+        "coaching_approved", // Coaching approved by admin
+        "coaching_rejected", // Coaching rejected by admin
+        "coaching_deleted", // Admin deleted coaching
+        "user_deleted", // Admin deleted user account
+        "subject_added", // Admin added new subject/examtype
+        "test_link_shared", // Coach shared test link
+        "student_joined", // New student attempted test
+        "admin_message", // Generic admin → user message
         "general",
       ],
       required: true,
     },
     title: { type: String, required: true },
     body: { type: String, default: "" },
+
+    // Action URL (frontend deep-link)
+    actionUrl: { type: String, default: "" },
 
     // Related resources
     testRequestId: {
